@@ -63,7 +63,8 @@ Details in [`docs/development.md`](docs/development.md).
 - [x] Viewer runs on Debian 12 (GNOME Wayland, VA-API H.264, ~30 fps)
 - [ ] Input verified end to end (mouse, keyboard, touch)
 - [ ] Slow start (~6 fps for the first seconds) and 60 fps target
-- [ ] UDP discovery
-- [ ] Audio (Speaker session)
+- [ ] UDP discovery (protocol documented; implementation in progress)
+- [ ] Audio (Speaker session; protocol documented, implementation in progress)
 - [ ] Pen, multi-touch, rotation
 - [ ] `.deb` package
+- [ ] Feature parity with the official viewer (menus, settings, mouse modes, audio, discovery) — in progress
