@@ -1,0 +1,15 @@
+# Local toolchain (JDK, Ghidra, downloads)
+/tools/*
+!/tools/probe/
+
+# RE workspace: vendor binaries/JS, Ghidra projects, captures
+/re/
+
+# Probe output
+captures/
+*.bin
+*.pcap
+*.pcapng
+
+__pycache__/
+*.pyc
