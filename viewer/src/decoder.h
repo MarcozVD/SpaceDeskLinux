@@ -16,7 +16,8 @@ enum sdv_pixfmt {
 
 struct sdv_image {
     enum sdv_pixfmt fmt;
-    int width, height;
+    int width, height; /* pixels in plane[] */
+    int src_w, src_h;  /* stream size (input coordinates); larger when scaled on the GPU */
     uint8_t *plane[3];
     int pitch[3];
     uint8_t *buf;
@@ -36,6 +37,12 @@ int sdv_decoder_feed(struct sdv_decoder *d, const struct sd_framebuffer *fb,
 
 /* Human readable description of the active H.264 path ("vaapi", "software", "none"). */
 const char *sdv_decoder_h264_backend(const struct sdv_decoder *d);
+
+/* Displayed size in pixels: hardware-decoded H.264 larger than this is scaled on the GPU. */
+void sdv_decoder_set_target(struct sdv_decoder *d, int w, int h);
+
+/* Accumulated time spent decoding and downloading/copying pictures (microseconds). */
+void sdv_decoder_timing(const struct sdv_decoder *d, uint64_t *decode_us, uint64_t *xfer_us);
 
 void sdv_image_free(struct sdv_image *img);
 

@@ -34,6 +34,9 @@ struct sdv_session_stats {
     int remote_w, remote_h;
     char local_addr[64], remote_addr[160];
     const char *h264_backend;
+    /* profiling (microseconds, accumulated) */
+    uint64_t t_wait_us, t_decode_us, t_xfer_us;
+    uint32_t max_frame_bytes;
 };
 
 struct sdv_session;
@@ -52,6 +55,9 @@ int sdv_session_send(struct sdv_session *s, const void *buf, size_t len);
  * The image is only valid during the callback. Returns 1 if fn was called. */
 int sdv_session_take_frame(struct sdv_session *s,
                            void (*fn)(void *user, const struct sdv_image *img), void *user);
+
+/* Size in pixels the video is displayed at (lets the decoder scale on the GPU). */
+void sdv_session_set_target(struct sdv_session *s, int w, int h);
 
 void sdv_session_get_stats(struct sdv_session *s, struct sdv_session_stats *out);
 

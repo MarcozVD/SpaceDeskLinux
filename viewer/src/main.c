@@ -229,7 +229,10 @@ static void build_session_config(struct sdv_app *a, struct sdv_session_config *c
     }
     c->ident.os_type = SD_OS_TYPE_VIEWER;
     c->ident.quality = (uint32_t)s->quality;
-    c->ident.fps = (uint16_t)s->fps;
+    /* The server paces capture at the requested rate plus its own overhead: asking for
+     * 60 delivers about 45 fps, asking for 120 delivers a steady 60 (measured). Request
+     * twice the setting; frames still only come when the screen changes. */
+    c->ident.fps = (uint16_t)(s->fps * 2 > 120 ? 120 : s->fps * 2);
     c->ident.nres = 1;
     c->ident.res_w[0] = (uint32_t)w;
     c->ident.res_h[0] = (uint32_t)h;
@@ -399,9 +402,10 @@ static void upload_frame(void *user, const struct sdv_image *img)
             fprintf(stderr, "render: %s\n", SDL_GetError());
             return;
         }
-        a->remote_w = img->width;
-        a->remote_h = img->height;
     }
+    a->remote_w = img->src_w;
+    a->remote_h = img->src_h;
+    Uint64 tu = SDL_GetPerformanceCounter();
     switch (img->fmt) {
     case SDV_FMT_BGRX:
         SDL_UpdateTexture(a->tex, NULL, img->plane[0], img->pitch[0]);
@@ -416,6 +420,8 @@ static void upload_frame(void *user, const struct sdv_image *img)
     default:
         break;
     }
+    a->prof_upload_us += (SDL_GetPerformanceCounter() - tu) * 1000000 / SDL_GetPerformanceFrequency();
+    a->prof_uploads++;
 }
 
 static void update_stats(struct sdv_app *a)
@@ -428,9 +434,21 @@ static void update_stats(struct sdv_app *a)
     sdv_session_get_stats(a->sess, &st);
     a->fps = (st.frames - a->stats_frames) * 1000.0 / dt;
     a->mbps = (st.bytes_rx - a->stats_rx) * 8.0 / 1000.0 / dt;
-    if (verbose)
-        fprintf(stderr, "stats: %.0f fps %.2f Mbit/s %s %s\n", a->fps, a->mbps, sd_encoding_name(st.encoding),
-                st.h264_backend ? st.h264_backend : "");
+    if (verbose) {
+        unsigned n = st.frames - a->stats_frames;
+        double per = n ? 1000.0 * n : 1.0; /* accumulated us -> ms per frame */
+        fprintf(stderr,
+                "stats: %.0f fps %.2f Mbit/s %s %s %dx%d | wait %.1f dec %.1f xfer %.1f upload %.1f ms/frame, max %u KiB\n",
+                a->fps, a->mbps, sd_encoding_name(st.encoding), st.h264_backend ? st.h264_backend : "", st.remote_w,
+                st.remote_h, (st.t_wait_us - a->prof_wait) / per, (st.t_decode_us - a->prof_decode) / per,
+                (st.t_xfer_us - a->prof_xfer) / per,
+                a->prof_upload_us / (a->prof_uploads ? 1000.0 * a->prof_uploads : 1.0), st.max_frame_bytes / 1024);
+        a->prof_wait = st.t_wait_us;
+        a->prof_decode = st.t_decode_us;
+        a->prof_xfer = st.t_xfer_us;
+        a->prof_upload_us = 0;
+        a->prof_uploads = 0;
+    }
     a->stats_frames = st.frames;
     a->stats_rx = st.bytes_rx;
     a->stats_tx = st.bytes_tx;
@@ -756,6 +774,14 @@ int main(int argc, char **argv)
         update_stats(a);
 
         ui_frame(a);
+        if (a->sess) {
+            /* video rect is in window coordinates; the decoder wants output pixels */
+            int ww, wh, ow, oh;
+            SDL_GetWindowSize(a->win, &ww, &wh);
+            SDL_GetRendererOutputSize(a->ren, &ow, &oh);
+            if (ww > 0 && wh > 0)
+                sdv_session_set_target(a->sess, a->video.w * ow / ww, a->video.h * oh / wh);
+        }
         update_cursor(a);
         if (a->streaming)
             SDL_SetRenderDrawColor(a->ren, 0, 0, 0, 255);

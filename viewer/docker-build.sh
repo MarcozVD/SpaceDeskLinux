@@ -9,7 +9,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq --no-install-recommends \
     build-essential cmake pkg-config \
-    libsdl2-dev libavcodec-dev libavutil-dev libturbojpeg0-dev >/dev/null
+    libsdl2-dev libavcodec-dev libavutil-dev libva-dev libturbojpeg0-dev >/dev/null
 
 cmake -S /src/viewer -B /tmp/build -DCMAKE_BUILD_TYPE=Release -DSDV_STATIC_TURBOJPEG=ON
 cmake --build /tmp/build -j"$(nproc)"

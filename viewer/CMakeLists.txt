@@ -11,7 +11,7 @@ option(SDV_STATIC_TURBOJPEG "Link TurboJPEG statically (target lacks libturbojpe
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2>=2.0.18)
-pkg_check_modules(AV REQUIRED IMPORTED_TARGET libavcodec libavutil)
+pkg_check_modules(AV REQUIRED IMPORTED_TARGET libavcodec libavutil libva)
 pkg_check_modules(TURBOJPEG REQUIRED IMPORTED_TARGET libturbojpeg)
 if(SDV_STATIC_TURBOJPEG)
   find_library(TURBOJPEG_STATIC_LIB NAMES libturbojpeg.a REQUIRED)

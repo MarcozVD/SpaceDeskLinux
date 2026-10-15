@@ -65,6 +65,8 @@ struct sdv_app {
     Uint32 stats_t0;
     uint64_t stats_rx, stats_tx;
     unsigned stats_frames;
+    uint64_t prof_wait, prof_decode, prof_xfer, prof_upload_us;
+    unsigned prof_uploads;
     double fps, mbps;
     int quit;
 

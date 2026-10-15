@@ -6,8 +6,12 @@
 
 #include <libavcodec/avcodec.h>
 #include <libavutil/hwcontext.h>
+#include <libavutil/hwcontext_vaapi.h>
+#include <libavutil/dict.h>
 #include <libavutil/pixdesc.h>
 #include <turbojpeg.h>
+
+#include <SDL_timer.h>
 
 struct sdv_decoder {
     int allow_hw;
@@ -21,6 +25,17 @@ struct sdv_decoder {
     uint8_t *pktbuf;
     size_t pktcap;
     const char *backend;
+    uint64_t t_decode_us, t_xfer_us;
+
+    /* VA-API video processing: scale on the GPU to the displayed size before the slow
+     * download from video memory (e.g. a 4K stream shown on a 1366x768 panel). */
+    int target_w, target_h;
+    int vpp_failed;
+    VAConfigID vpp_config;
+    VAContextID vpp_context;
+    AVBufferRef *vpp_frames;
+    AVFrame *vppframe;
+    int vpp_w, vpp_h;
 
     /* Fragmented formats (JPEG, BGRX): assembled into a BGRX canvas */
     tjhandle tj;
@@ -50,6 +65,8 @@ static int image_reserve(struct sdv_image *img, enum sdv_pixfmt fmt, int w, int 
     img->fmt = fmt;
     img->width = w;
     img->height = h;
+    img->src_w = w;
+    img->src_h = h;
     memset(img->plane, 0, sizeof(img->plane));
     memset(img->pitch, 0, sizeof(img->pitch));
     img->plane[0] = img->buf;
@@ -104,6 +121,52 @@ static enum AVPixelFormat pick_format(AVCodecContext *ctx, const enum AVPixelFor
     return AV_PIX_FMT_NONE;
 }
 
+static int va_has_entrypoint(VADisplay dpy, VAProfile profile, VAEntrypoint want)
+{
+    int n = 0, max = vaMaxNumEntrypoints(dpy), found = 0;
+    VAEntrypoint *list = max > 0 ? calloc((size_t)max, sizeof(*list)) : NULL;
+
+    if (list && vaQueryConfigEntrypoints(dpy, profile, list, &n) == VA_STATUS_SUCCESS)
+        for (int i = 0; i < n; i++)
+            found |= list[i] == want;
+    free(list);
+    return found;
+}
+
+static VADisplay va_display(AVBufferRef *dev)
+{
+    return ((AVVAAPIDeviceContext *)((AVHWDeviceContext *)dev->data)->hwctx)->display;
+}
+
+/* Opens a VA-API device. The free iHD build in Debian 12 has no video processing
+ * entrypoint, which the GPU scaling needs; when the default driver lacks it and the
+ * user did not pick one (LIBVA_DRIVER_NAME), prefer i965 if it decodes H.264. */
+static int vaapi_device_open(AVBufferRef **out)
+{
+    AVBufferRef *dev = NULL, *alt = NULL;
+    AVDictionary *opts = NULL;
+
+    if (av_hwdevice_ctx_create(&dev, AV_HWDEVICE_TYPE_VAAPI, NULL, NULL, 0) < 0)
+        return -1;
+    if (!getenv("LIBVA_DRIVER_NAME") && !va_has_entrypoint(va_display(dev), VAProfileNone, VAEntrypointVideoProc)) {
+        av_dict_set(&opts, "driver", "i965", 0);
+        if (av_hwdevice_ctx_create(&alt, AV_HWDEVICE_TYPE_VAAPI, NULL, opts, 0) == 0) {
+            VADisplay dpy = va_display(alt);
+            if (va_has_entrypoint(dpy, VAProfileNone, VAEntrypointVideoProc) &&
+                va_has_entrypoint(dpy, VAProfileH264High, VAEntrypointVLD)) {
+                fprintf(stderr, "decoder: using VA-API driver i965 (default driver has no video processing)\n");
+                av_buffer_unref(&dev);
+                dev = alt;
+                alt = NULL;
+            }
+            av_buffer_unref(&alt);
+        }
+        av_dict_free(&opts);
+    }
+    *out = dev;
+    return 0;
+}
+
 static int h264_open(struct sdv_decoder *d, int try_hw)
 {
     const AVCodec *codec = avcodec_find_decoder(AV_CODEC_ID_H264);
@@ -118,7 +181,7 @@ static int h264_open(struct sdv_decoder *d, int try_hw)
     d->avctx->flags2 |= AV_CODEC_FLAG2_FAST;
 
     d->backend = "software";
-    if (try_hw && av_hwdevice_ctx_create(&d->hwdev, AV_HWDEVICE_TYPE_VAAPI, NULL, NULL, 0) == 0) {
+    if (try_hw && vaapi_device_open(&d->hwdev) == 0) {
         d->avctx->hw_device_ctx = av_buffer_ref(d->hwdev);
         d->avctx->get_format = pick_format;
         d->backend = "vaapi";
@@ -146,8 +209,11 @@ static int h264_open(struct sdv_decoder *d, int try_hw)
     return 0;
 }
 
+static void vpp_close(struct sdv_decoder *d);
+
 static void h264_close(struct sdv_decoder *d)
 {
+    vpp_close(d);
     avcodec_free_context(&d->avctx);
     av_buffer_unref(&d->hwdev);
 }
@@ -179,6 +245,113 @@ static int frame_to_image(const AVFrame *f, struct sdv_image *out)
     }
 }
 
+static void vpp_close(struct sdv_decoder *d)
+{
+    if (d->hwdev && (d->vpp_context || d->vpp_config)) {
+        AVHWDeviceContext *dev = (AVHWDeviceContext *)d->hwdev->data;
+        VADisplay dpy = ((AVVAAPIDeviceContext *)dev->hwctx)->display;
+        if (d->vpp_context)
+            vaDestroyContext(dpy, d->vpp_context);
+        if (d->vpp_config)
+            vaDestroyConfig(dpy, d->vpp_config);
+    }
+    d->vpp_context = 0;
+    d->vpp_config = 0;
+    av_frame_free(&d->vppframe);
+    av_buffer_unref(&d->vpp_frames);
+    d->vpp_w = d->vpp_h = 0;
+}
+
+/* Scales the decoded VA surface to the displayed size. Returns the scaled hardware frame,
+ * or NULL when scaling is not needed or not available (the caller downloads src). */
+static AVFrame *vpp_scale(struct sdv_decoder *d, const AVFrame *src)
+{
+    AVHWDeviceContext *dev;
+    VADisplay dpy;
+    VAProcPipelineParameterBuffer pp;
+    VABufferID buf;
+    VAStatus st;
+    int w = d->target_w, h = d->target_h;
+
+    if (d->vpp_failed || w < 16 || h < 16 || (w >= src->width && h >= src->height))
+        return NULL;
+    /* keep the stream aspect ratio; the renderer letterboxes */
+    if ((int64_t)w * src->height > (int64_t)h * src->width)
+        w = (int)((int64_t)h * src->width / src->height);
+    else
+        h = (int)((int64_t)w * src->height / src->width);
+    w &= ~1;
+    h &= ~1;
+
+    dev = (AVHWDeviceContext *)d->hwdev->data;
+    dpy = ((AVVAAPIDeviceContext *)dev->hwctx)->display;
+
+    if (w != d->vpp_w || h != d->vpp_h) {
+        AVHWFramesContext *fc;
+        vpp_close(d);
+        d->vpp_frames = av_hwframe_ctx_alloc(d->hwdev);
+        if (!d->vpp_frames)
+            goto fail;
+        fc = (AVHWFramesContext *)d->vpp_frames->data;
+        fc->format = AV_PIX_FMT_VAAPI;
+        fc->sw_format = AV_PIX_FMT_NV12;
+        fc->width = w;
+        fc->height = h;
+        fc->initial_pool_size = 4;
+        if ((st = av_hwframe_ctx_init(d->vpp_frames)) < 0) {
+            fprintf(stderr, "decoder: hwframe pool %dx%d failed (%d)\n", w, h, st);
+            goto fail;
+        }
+        if ((st = vaCreateConfig(dpy, VAProfileNone, VAEntrypointVideoProc, NULL, 0, &d->vpp_config)) !=
+            VA_STATUS_SUCCESS) {
+            fprintf(stderr, "decoder: vaCreateConfig(VideoProc): %s\n", vaErrorStr(st));
+            goto fail;
+        }
+        if ((st = vaCreateContext(dpy, d->vpp_config, w, h, VA_PROGRESSIVE, NULL, 0, &d->vpp_context)) !=
+            VA_STATUS_SUCCESS) {
+            fprintf(stderr, "decoder: vaCreateContext(VideoProc): %s\n", vaErrorStr(st));
+            goto fail;
+        }
+        d->vppframe = av_frame_alloc();
+        if (!d->vppframe)
+            goto fail;
+        d->vpp_w = w;
+        d->vpp_h = h;
+        fprintf(stderr, "decoder: GPU scaling %dx%d -> %dx%d\n", src->width, src->height, w, h);
+    }
+
+    av_frame_unref(d->vppframe);
+    if (av_hwframe_get_buffer(d->vpp_frames, d->vppframe, 0) < 0)
+        goto fail;
+
+    memset(&pp, 0, sizeof(pp));
+    pp.surface = (VASurfaceID)(uintptr_t)src->data[3];
+    pp.output_background_color = 0xff000000;
+    pp.filter_flags = VA_FILTER_SCALING_HQ;
+    if (vaCreateBuffer(dpy, d->vpp_context, VAProcPipelineParameterBufferType, sizeof(pp), 1, &pp, &buf) !=
+        VA_STATUS_SUCCESS)
+        goto fail;
+    st = vaBeginPicture(dpy, d->vpp_context, (VASurfaceID)(uintptr_t)d->vppframe->data[3]);
+    if (st == VA_STATUS_SUCCESS)
+        st = vaRenderPicture(dpy, d->vpp_context, &buf, 1);
+    if (st == VA_STATUS_SUCCESS)
+        st = vaEndPicture(dpy, d->vpp_context);
+    vaDestroyBuffer(dpy, buf);
+    if (st != VA_STATUS_SUCCESS) {
+        fprintf(stderr, "decoder: VA-API scaling: %s\n", vaErrorStr(st));
+        goto fail;
+    }
+    d->vppframe->width = w;
+    d->vppframe->height = h;
+    return d->vppframe;
+
+fail:
+    fprintf(stderr, "decoder: VA-API scaling unavailable, downloading full size\n");
+    vpp_close(d);
+    d->vpp_failed = 1;
+    return NULL;
+}
+
 static int h264_feed(struct sdv_decoder *d, const uint8_t *data, size_t len, struct sdv_image *out)
 {
     int got = 0, ret;
@@ -201,6 +374,7 @@ static int h264_feed(struct sdv_decoder *d, const uint8_t *data, size_t len, str
     d->pkt->data = d->pktbuf;
     d->pkt->size = (int)len;
 
+    Uint64 t0 = SDL_GetPerformanceCounter(), freq = SDL_GetPerformanceFrequency();
     ret = avcodec_send_packet(d->avctx, d->pkt);
     if (ret < 0 && ret != AVERROR(EAGAIN)) {
         fprintf(stderr, "decoder: send_packet failed (%d)\n", ret);
@@ -209,21 +383,31 @@ static int h264_feed(struct sdv_decoder *d, const uint8_t *data, size_t len, str
 
     while ((ret = avcodec_receive_frame(d->avctx, d->frame)) == 0) {
         const AVFrame *src = d->frame;
+        Uint64 t1 = SDL_GetPerformanceCounter();
+        d->t_decode_us += (t1 - t0) * 1000000 / freq;
         if (d->frame->format == AV_PIX_FMT_VAAPI) {
+            const AVFrame *hw = vpp_scale(d, d->frame);
+            if (!hw)
+                hw = d->frame;
             av_frame_unref(d->swframe);
-            if (av_hwframe_transfer_data(d->swframe, d->frame, 0) < 0) {
+            if (av_hwframe_transfer_data(d->swframe, hw, 0) < 0) {
                 fprintf(stderr, "decoder: VA-API surface download failed, switching to software\n");
                 av_frame_unref(d->frame);
                 h264_close(d);
                 d->allow_hw = 0;
                 return 0;
             }
-            d->swframe->width = d->frame->width;
-            d->swframe->height = d->frame->height;
+            d->swframe->width = hw->width;
+            d->swframe->height = hw->height;
             src = d->swframe;
         }
-        if (frame_to_image(src, out) == 0)
+        if (frame_to_image(src, out) == 0) {
+            out->src_w = d->frame->width;
+            out->src_h = d->frame->height;
             got = 1;
+        }
+        t0 = SDL_GetPerformanceCounter();
+        d->t_xfer_us += (t0 - t1) * 1000000 / freq;
         av_frame_unref(d->frame);
     }
     return got;
@@ -372,4 +556,16 @@ int sdv_decoder_feed(struct sdv_decoder *d, const struct sd_framebuffer *fb,
 const char *sdv_decoder_h264_backend(const struct sdv_decoder *d)
 {
     return d->backend;
+}
+
+void sdv_decoder_timing(const struct sdv_decoder *d, uint64_t *decode_us, uint64_t *xfer_us)
+{
+    *decode_us = d->t_decode_us;
+    *xfer_us = d->t_xfer_us;
+}
+
+void sdv_decoder_set_target(struct sdv_decoder *d, int w, int h)
+{
+    d->target_w = w;
+    d->target_h = h;
 }

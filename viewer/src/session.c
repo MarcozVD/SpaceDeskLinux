@@ -16,6 +16,7 @@ struct sdv_session {
     int conn_open;
     SDL_Thread *thread;
     SDL_atomic_t running;
+    SDL_atomic_t target_w, target_h;
 
     SDL_mutex *lock; /* guards everything below */
     enum sdv_session_state state;
@@ -109,6 +110,7 @@ static int session_thread(void *arg)
     sd_build_flow_ack(ack);
     while (SDL_AtomicGet(&s->running)) {
         uint32_t type, len;
+        Uint64 tw0 = SDL_GetPerformanceCounter();
 
         if (sdv_conn_recv(&s->conn, hdr, sizeof(hdr)) < 0) {
             snprintf(err, sizeof(err), "Conexion cerrada por el servidor");
@@ -133,6 +135,9 @@ static int session_thread(void *arg)
         }
         SDL_LockMutex(s->lock);
         s->stats.bytes_rx += len + SD_HEADER_LEN;
+        s->stats.t_wait_us += (SDL_GetPerformanceCounter() - tw0) * 1000000 / SDL_GetPerformanceFrequency();
+        if (type == SD_T_FRAMEBUFFER && len > s->stats.max_frame_bytes)
+            s->stats.max_frame_bytes = len;
         SDL_UnlockMutex(s->lock);
 
         if (type == SD_T_FRAMEBUFFER) {
@@ -141,10 +146,16 @@ static int session_thread(void *arg)
             int r;
 
             sd_parse_framebuffer(hdr, &fb);
+            /* Flow control: the server sends the next frame only after an ack. Ack an H.264
+             * access unit as soon as it is received so the server encodes the next frame
+             * while this one decodes. */
+            if (fb.encoding == SD_ENC_H264)
+                sdv_session_send(s, ack, sizeof(ack));
             /* Only this thread writes the back image; the render loop reads the front one. */
             SDL_LockMutex(s->lock);
             back = &s->images[s->front ^ 1];
             SDL_UnlockMutex(s->lock);
+            sdv_decoder_set_target(dec, SDL_AtomicGet(&s->target_w), SDL_AtomicGet(&s->target_h));
             r = sdv_decoder_feed(dec, &fb, payload, len, back);
             if (r > 0) {
                 SDL_LockMutex(s->lock);
@@ -152,14 +163,15 @@ static int session_thread(void *arg)
                 s->fresh = 1;
                 s->stats.frames++;
                 s->stats.encoding = fb.encoding;
-                s->stats.remote_w = back->width;
-                s->stats.remote_h = back->height;
+                s->stats.remote_w = back->src_w;
+                s->stats.remote_h = back->src_h;
                 s->stats.h264_backend = sdv_decoder_h264_backend(dec);
+                sdv_decoder_timing(dec, &s->stats.t_decode_us, &s->stats.t_xfer_us);
                 SDL_UnlockMutex(s->lock);
                 push_event(s->frame_event);
             }
-            /* Flow control: one ack per complete frame (fragments ack on the last one). */
-            if (r > 0 || fb.encoding == SD_ENC_H264)
+            /* Fragmented formats: one ack per complete frame (on the last fragment). */
+            if (r > 0 && fb.encoding != SD_ENC_H264)
                 sdv_session_send(s, ack, sizeof(ack));
         } else if (type == SD_T_ERROR) {
             snprintf(err, sizeof(err), "El servidor cerro la sesion (motivo %u)", sd_get_u32(hdr + 8));
@@ -254,4 +266,10 @@ void sdv_session_get_stats(struct sdv_session *s, struct sdv_session_stats *out)
     SDL_LockMutex(s->lock);
     *out = s->stats;
     SDL_UnlockMutex(s->lock);
+}
+
+void sdv_session_set_target(struct sdv_session *s, int w, int h)
+{
+    SDL_AtomicSet(&s->target_w, w);
+    SDL_AtomicSet(&s->target_h, h);
 }
