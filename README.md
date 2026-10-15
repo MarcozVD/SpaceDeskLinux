@@ -29,6 +29,15 @@ and analysis tools in `tools/`, both git-ignored.
 
 ## Quick start (Debian 12)
 
+Build without touching the target system (Docker), then copy the binary:
+
+```sh
+docker run --rm -v "$PWD":/src debian:bookworm sh /src/viewer/docker-build.sh
+./dist/sdviewer <windows-ip>
+```
+
+Or natively:
+
 ```sh
 su -c 'apt-get install -y build-essential cmake pkg-config libsdl2-dev libavcodec-dev \
   libavutil-dev libturbojpeg0-dev intel-media-va-driver'
@@ -43,7 +52,9 @@ Details in [`docs/development.md`](docs/development.md).
 - [x] Protocol: identification (legacy and extended), frames, flow control, input
 - [x] H.264 negotiation (extended identification, encoding 4)
 - [x] Viewer source: H.264/JPEG/BGRX decoding, fullscreen, mouse, keyboard, touch
-- [ ] Viewer built and tested on Debian
+- [x] Viewer runs on Debian 12 (GNOME Wayland, VA-API H.264, ~30 fps)
+- [ ] Input verified end to end (mouse, keyboard, touch)
+- [ ] Slow start (~6 fps for the first seconds) and 60 fps target
 - [ ] UDP discovery
 - [ ] Audio (Speaker session)
 - [ ] Pen, multi-touch, rotation

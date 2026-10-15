@@ -13,3 +13,7 @@ captures/
 
 __pycache__/
 *.pyc
+
+# Build output
+build/
+dist/

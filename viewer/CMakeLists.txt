@@ -7,10 +7,15 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE RelWithDebInfo)
 endif()
 
+option(SDV_STATIC_TURBOJPEG "Link TurboJPEG statically (target lacks libturbojpeg0)" OFF)
+
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2>=2.0.18)
 pkg_check_modules(AV REQUIRED IMPORTED_TARGET libavcodec libavutil)
 pkg_check_modules(TURBOJPEG REQUIRED IMPORTED_TARGET libturbojpeg)
+if(SDV_STATIC_TURBOJPEG)
+  find_library(TURBOJPEG_STATIC_LIB NAMES libturbojpeg.a REQUIRED)
+endif()
 
 add_executable(sdviewer
   src/main.c
@@ -20,6 +25,12 @@ add_executable(sdviewer
   src/net.c
 )
 target_compile_options(sdviewer PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
-target_link_libraries(sdviewer PRIVATE PkgConfig::SDL2 PkgConfig::AV PkgConfig::TURBOJPEG)
+target_link_libraries(sdviewer PRIVATE PkgConfig::SDL2 PkgConfig::AV)
+if(SDV_STATIC_TURBOJPEG)
+  target_include_directories(sdviewer PRIVATE ${TURBOJPEG_INCLUDE_DIRS})
+  target_link_libraries(sdviewer PRIVATE ${TURBOJPEG_STATIC_LIB})
+else()
+  target_link_libraries(sdviewer PRIVATE PkgConfig::TURBOJPEG)
+endif()
 
 install(TARGETS sdviewer RUNTIME DESTINATION bin)

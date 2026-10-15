@@ -59,7 +59,21 @@ While connected, the server adds a virtual monitor on the Windows PC. The server
 settings per device id under `HKLM\SOFTWARE\datronicsoft\spacedesk\<device id>`; test ids can
 be deleted there afterwards.
 
-## Debian: building the viewer
+## Building the viewer without root (Docker)
+
+The Debian 12 desktop already ships the runtime libraries (SDL2 2.26, FFmpeg 5.1, libva + `iHD`
+driver). Only compilers and `-dev` packages are missing, so the viewer is built in a
+`debian:bookworm` container (same glibc and library versions) with TurboJPEG linked statically:
+
+```sh
+docker run --rm -v "$PWD":/src debian:bookworm sh /src/viewer/docker-build.sh   # -> dist/sdviewer
+scp dist/sdviewer <user>@<debian-host>:sdviewer/
+```
+
+On Windows Git Bash prefix the `docker run` with `MSYS_NO_PATHCONV=1` and pass the repo as a
+Windows path (`-v "C:\\path\\to\\SpaceDeskLinux:/src"`).
+
+## Debian: building the viewer natively
 
 Build dependencies (needs root):
 
@@ -84,3 +98,12 @@ XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0 SDL_VIDEODRIVER=wayland
 ```
 
 Hotkeys: `Ctrl+Alt+F` toggles fullscreen, `Ctrl+Alt+Q` quits.
+
+Use the Windows address of the interface the Debian host can reach (`ss`/`ipconfig`); a PC with
+both Ethernet and Wi-Fi may only accept the connection on one of them.
+
+## Test results
+
+| Date | Setup | Result |
+|---|---|---|
+| 2026-10-14 | Debian 12, GNOME Wayland, HD 620 → spacedesk 2.2.x on Windows 11 (Ethernet), H.264 q70 | Connected, VA-API decoding, 1366x768, ~30 fps steady after ~12 s at ~6 fps; 0.2–0.7 Mbit/s |
