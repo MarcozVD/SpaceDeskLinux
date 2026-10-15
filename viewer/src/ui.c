@@ -541,6 +541,12 @@ static void menu_bar(struct sdv_app *a, int width)
     struct nk_context *ctx = a->nk;
     struct sdv_settings *s = &a->set;
     struct nk_rect chip;
+    struct nk_window *bar = nk_window_find(ctx, "menubar");
+
+    /* While a dialog is open Nuklear marks the bar read-only; when the dialog closes the bar is
+     * already the top window, so nothing clears the flag and its menus stop responding. */
+    if (bar && a->dialog == SDV_DLG_NONE)
+        bar->flags &= ~(nk_flags)NK_WINDOW_ROM;
 
     nk_style_push_style_item(ctx, &ctx->style.window.fixed_background, nk_style_item_color(C_BAR));
     nk_style_push_vec2(ctx, &ctx->style.window.padding, nk_vec2(8, 3));
