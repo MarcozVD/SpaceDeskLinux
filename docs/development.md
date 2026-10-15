@@ -122,8 +122,13 @@ both Ethernet and Wi-Fi may only accept the connection on one of them.
 | `settings.c` | `~/.config/sdviewer/settings.ini` persistence |
 | `nk.h`, `nk_impl.c` | Nuklear configuration and single implementation unit |
 
-Debug aid: `SDV_SNAPSHOT=/path/frame.bmp` (optional `SDV_SNAPSHOT_MS`, default 6000) saves one rendered
-frame, which verifies the UI and letterboxing without a human at the screen.
+Debug aids:
+
+- `SDV_SNAPSHOT=/path/frame.bmp` (optional `SDV_SNAPSHOT_MS`, default 6000) saves one rendered frame,
+  which verifies the UI and letterboxing without a human at the screen.
+- `SDV_OPEN_DIALOG=resolutions|quality|autoconnect|advanced|about` opens a settings dialog at startup.
+- `SDV_DEMO=1` shows a fixed sample server ("PC-ESCRITORIO (192.168.1.50)") for screenshots without
+  real names or addresses.
 
 ## Test results
 
