@@ -226,6 +226,12 @@ Reply (server → client), sent from port 28252, **308 bytes** `[live]`:
 
 `@272 = 4` and `@276 = 8` are protocol version 4.8 `[live]`.
 
+`[live]` The server binds one UDP discovery socket per IPv4 interface when the service starts (seen
+with `Get-NetUDPEndpoint`: 192.168.1.19, 192.168.56.1, 192.168.64.1). An adapter configured later —
+for example a USB Ethernet adapter with 192.168.50.1 — gets no UDP socket, so discovery on that
+address gets no answer (unicast or broadcast) even though TCP 28252 there works; restarting the
+spacedesk service fixes it.
+
 ## Speaker session (audio) `[viewer]` `[live]`
 
 Audio is a **separate TCP connection** to 28252, not part of the display session. Sender

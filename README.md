@@ -8,18 +8,23 @@ instead of the browser-based HTML5 viewer. Tested on Debian 12 (GNOME Wayland).
 This is an independent, clean-room interoperability project; it is **not affiliated with
 datronicsoft**.
 
+![Connect screen with the LAN server list](docs/img/connect-screen.png)
+
+![Quality / performance settings dialog](docs/img/quality-dialog.png)
+
 ## Features
 
 - **Display** — H.264 (hardware VA-API or software) through FFmpeg, JPEG (TurboJPEG) and raw
-  RGBA/YUV; quality and 30/60/90/120 fps; native or custom resolution; "turbo" mode (reduced
-  resolution, upscaled locally).
+  RGBA/YUV; quality and 30/60/90/120 fps, steady 60 fps at native resolution (server pacing + GPU
+  scaling); native or custom resolution; "turbo" mode (reduced resolution, upscaled locally).
 - **Input** — mouse remote (captured pointer, relative motion like the official Windows viewer),
   mouse as touch, touchscreen (absolute) or touchpad (relative); keyboard by **physical keys**, so
   the Windows keyboard layout applies (Spanish ñ/accents work).
 - **Audio** — the Windows sound played on the Linux speakers through a separate Speaker session.
-- **Connection** — LAN discovery, recent servers, automatic connect and reconnect.
-- **UI** — menus equivalent to the official viewer, status bar (traffic, codec, fps, Mbps),
-  full screen, keep monitor active.
+- **Connection** — LAN discovery, recent servers, automatic connect and reconnect; works over a
+  direct cable with no router.
+- **UI** — redesigned interface (0.3.0), menus equivalent to the official viewer, status bar
+  (traffic, codec, fps, Mbps), full screen, keep monitor active.
 
 ## Requirements
 
@@ -55,14 +60,15 @@ Details in [`docs/development.md`](docs/development.md).
 Open **"SpaceDesk Linux"** from the application menu, or run:
 
 ```
-sdviewer [-w] [--no-hw] [-v] [server]
+sdviewer [-w] [--no-hw] [-v] [--version] [server]
   -w, --windowed   start windowed even if "full screen upon connect" is set
       --no-hw      disable VA-API decoding for this run
-  -v, --verbose    log connection details and statistics
+  -v, --verbose    log connection details and per-frame timing
+      --version    print the version and exit
 ```
 
 The server address is optional: without it the connect screen appears and lists the servers found
-on the network ("Servidores en tu red"); you can also type an IP. Full screen on connect is set in
+on the network ("Equipos con spacedesk"); you can also type an IP. Full screen on connect is set in
 **Ajustes**.
 
 ### Hotkeys
@@ -84,6 +90,34 @@ on the network ("Servidores en tu red"); you can also type an IP. Full screen on
 | **Ajustes** | Resoluciones, Calidad / Rendimiento, Conexión automática, Pantalla completa al conectar, Mantener monitor activo, Restablecer ajustes, Avanzado |
 | **Ayuda** | Manual de spacedesk, proyecto en GitHub, Acerca de |
 
+### Direct cable connection
+
+No router or Wi-Fi needed: connect the Windows PC and the Linux laptop with an Ethernet cable and
+give both ends a static address on the same subnet.
+
+**Windows** (elevated prompt; adapt the adapter name, no gateway):
+
+```bat
+netsh interface ip set address name="Ethernet 3" static 192.168.50.1 255.255.255.0
+rem optional, only to answer ping:
+netsh advfirewall firewall add rule name="ICMP permitir" protocol=icmpv4:8,any dir=in action=allow
+```
+
+**Debian** (in the desktop session, no root) — GNOME Settings > Network > Wired > IPv4 Manual
+`192.168.50.2 / 255.255.255.0`, no gateway, or:
+
+```sh
+nmcli connection add type ethernet ifname eno1 con-name spacedesk-cable \
+  ipv4.method manual ipv4.addresses 192.168.50.2/24 ipv4.never-default yes ipv6.method ignore
+nmcli connection up spacedesk-cable
+```
+
+Then `ping 192.168.50.1` and connect to `192.168.50.1` (type it or use Recientes; set it in
+**Ajustes > Conexión automática**).
+
+If the cable was plugged in after spacedesk started, restart the spacedesk service on Windows so the
+PC also appears in the discovery list (see the discovery note in `docs/protocol.md`).
+
 ## Configuration
 
 - `~/.config/sdviewer/settings.ini` — all viewer settings.
@@ -97,8 +131,11 @@ on the network ("Servidores en tu red"); you can also type an IP. Full screen on
   shown in the list.
 - **Black screen or artifacts** — **Ajustes > Avanzado**: disable hardware H.264, or run with
   `--no-hw`.
-- **Low frame rate** — use the native resolution of the Linux screen (a larger custom resolution does
-  not add sharpness and lowers fps), prefer a cable over Wi-Fi, and check the `sdviewer -v` stats.
+- **Low frame rate** — keep the native resolution of the Linux screen (a larger custom resolution
+  does not look sharper and lowers fps), prefer a cable over Wi-Fi, and check `sdviewer -v`: a high
+  `wait` is the server side, a high `xfer`/`upload` is this machine.
+- **VA-API driver** — the viewer picks `i965` automatically when the default `iHD` build lacks video
+  processing; override with `LIBVA_DRIVER_NAME=iHD` or `LIBVA_DRIVER_NAME=i965`.
 - **No sound** — enable **Funciones > Audio** and check the output device in the system mixer.
 - **Keys stuck** — press Ctrl+Alt+M; the viewer releases modifiers automatically when a hotkey is
   used or the window loses focus.
@@ -119,11 +156,13 @@ instructions and the viewer architecture.
 - [x] Protocol: identification (legacy and extended), frames, flow control, input
 - [x] H.264 negotiation (extended identification, encoding 4)
 - [x] Viewer: H.264/JPEG/RGBA/YUV decoding, full screen, mouse, keyboard, touch
-- [x] UI redesign: blue theme, connect screen with discovery, menus and dialogs, status bar
+- [x] UI redesign (0.3.0): graphite/amber theme, connect screen with discovery, menus and dialogs, status bar
 - [x] UDP discovery (LAN server list) and audio (Speaker session)
 - [x] Feature parity with the official viewer (menus, settings, mouse modes, audio, discovery)
+- [x] Steady 60 fps at native resolution (server pacing, GPU scaling, early acks)
+- [x] Direct cable connection (no router)
 - [ ] Input verified by a human (mouse remote, mouse local, keyboard layout, touchscreen)
-- [ ] Slow start (~6 fps for the first seconds) and a steady 60 fps
+- [ ] Re-test the new UI on a Wayland session
 - [ ] Pen, multi-touch, rotation
 - [ ] `.deb` package
 - [ ] TLS / password mode

@@ -106,12 +106,12 @@ both Ethernet and Wi-Fi may only accept the connection on one of them.
 
 ## Viewer architecture
 
-`sdviewer` 0.2.0 is C11 on SDL2. Sources under `viewer/src/`:
+`sdviewer` 0.3.0 is C11 on SDL2. Sources under `viewer/src/`:
 
 | Module | Role |
 |---|---|
 | `main.c` | SDL window and event loop, CLI, hotkeys, input dispatch, frame upload |
-| `ui.c` | Nuklear menu bar, dialogs and the connect screen |
+| `ui.c` | Nuklear menu bar, dialogs and connect screen; graphite/amber palette with the Cantarell font (DejaVu/Noto fallback) |
 | `session.c` | one display session: connect, identify, receive/decode on a background thread, stats, reconnect |
 | `decoder.c` | H.264 (FFmpeg + VA-API), JPEG (TurboJPEG), raw BGRX and YUV 4:2:0 |
 | `protocol.c` | identification and header/packet construction |
@@ -146,3 +146,15 @@ Debug aids:
 | 2026-10-14 | Debian 12, GNOME Wayland, HD 620 → spacedesk 2.2.x on Windows 11 (Ethernet), H.264 q70 | Connected, VA-API decoding, 1366x768, ~30 fps steady after ~12 s at ~6 fps; 0.2–0.7 Mbit/s |
 | 2026-10-14 | Same, viewer 0.2.0 (menus, discovery, audio) | Discovery found "Marcos (192.168.1.19)"; VA-API H.264 ~33 fps; audio over PipeWire (48000 Hz, 2 ch, 16 bit); menu bar and letterboxed video correct (`SDV_SNAPSHOT`). Input not yet verified by a human |
 | 2026-10-15 | Debian 12, X11, HD 620 → spacedesk on Windows 11 i5-12450HX (direct Ethernet), 60 fps test animation | Native 1366x768, H.264 q100: steady 59–61 fps, viewer ~6 ms/frame (xfer 4.5, upload 1.2). 4K stream: viewer ~10 ms/frame but server ~31 fps. Server pacing: identification fps 60 → ~45 fps, 90 → 55–61, 120 → 60 |
+| 2026-10-15 | viewer 0.3.0, X11, direct Ethernet (192.168.50.1 ↔ .2), input injected with XTest | 1366x768 steady 59–61 fps with H.264 q100 and JPEG; remote mouse (captured) moves the Windows pointer; CapsLock toggles on Windows; audio plays 48000 Hz 2 ch 16 bit via PipeWire/pulse |
+| 2026-10-15 | Same, mouse-as-touch and absolute mapping | Touch at 640,360 of 1280x720 landed at 640,360 of a monitor at x=1280 (absolute) |
+| 2026-10-15 | packaging/install-user.sh into a temporary HOME | Binary, launcher and "SpaceDesk Linux" menu entry installed; the old `~/.config/sdviewer/server` migrated into `settings.ini` on first start |
+| 2026-10-15 | viewer 0.3.0 UI, `SDV_DEMO=1` + `SDV_OPEN_DIALOG` snapshots | Connect screen, connecting state and all five dialogs render correctly |
+
+### Testing input without a human
+
+Input can be driven on the X11 session with XTest (`python3` + `ctypes` on `libXtst`) and watched on
+the Windows side with a small `GetCursorPos`/`GetKeyState` polling script. Run the viewer with an
+isolated config (`XDG_CONFIG_HOME=/tmp/...`) so tests never change the user's settings. Only take an
+`SDV_SNAPSHOT` while `SDV_DEMO=1` is set or a test pattern covers the virtual monitor — never capture
+the real desktop.
