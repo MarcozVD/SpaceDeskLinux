@@ -87,23 +87,47 @@ Build and run:
 
 ```sh
 cmake -S viewer -B build && cmake --build build -j
-./build/sdviewer -v <windows-ip>          # fullscreen, H.264
-./build/sdviewer -w -j <windows-ip>       # windowed, JPEG
+./build/sdviewer <windows-ip>             # fullscreen per settings, H.264
+./build/sdviewer -w --no-hw <windows-ip>  # windowed, no VA-API
+./build/sdviewer -v <windows-ip>          # verbose statistics
 ```
 
 Running it from SSH on the GNOME session:
 
 ```sh
-XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0 SDL_VIDEODRIVER=wayland ./build/sdviewer -v <windows-ip>
+XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0 SDL_VIDEODRIVER=wayland ./build/sdviewer <windows-ip>
 ```
 
-Hotkeys: `Ctrl+Alt+F` toggles fullscreen, `Ctrl+Alt+Q` quits.
+Hotkeys: `Alt+Enter` toggles full screen; `Ctrl+Alt+M` releases the mouse and opens the menu
+(in full screen the menu also appears at the top edge).
 
 Use the Windows address of the interface the Debian host can reach (`ss`/`ipconfig`); a PC with
 both Ethernet and Wi-Fi may only accept the connection on one of them.
+
+## Viewer architecture
+
+`sdviewer` 0.2.0 is C11 on SDL2. Sources under `viewer/src/`:
+
+| Module | Role |
+|---|---|
+| `main.c` | SDL window and event loop, CLI, hotkeys, input dispatch, frame upload |
+| `ui.c` | Nuklear menu bar, dialogs and the connect screen |
+| `session.c` | one display session: connect, identify, receive/decode on a background thread, stats, reconnect |
+| `decoder.c` | H.264 (FFmpeg + VA-API), JPEG (TurboJPEG), raw BGRX and YUV 4:2:0 |
+| `protocol.c` | identification and header/packet construction |
+| `keymap.c` | Linux scancode → Windows virtual-key / scancode translation |
+| `net.c` | TCP helpers |
+| `audio.c` | Speaker session (client type 3), PCM playback via SDL |
+| `discovery.c` | UDP LAN discovery of servers |
+| `settings.c` | `~/.config/sdviewer/settings.ini` persistence |
+| `nk.h`, `nk_impl.c` | Nuklear configuration and single implementation unit |
+
+Debug aid: `SDV_SNAPSHOT=/path/frame.bmp` (optional `SDV_SNAPSHOT_MS`, default 6000) saves one rendered
+frame, which verifies the UI and letterboxing without a human at the screen.
 
 ## Test results
 
 | Date | Setup | Result |
 |---|---|---|
 | 2026-10-14 | Debian 12, GNOME Wayland, HD 620 → spacedesk 2.2.x on Windows 11 (Ethernet), H.264 q70 | Connected, VA-API decoding, 1366x768, ~30 fps steady after ~12 s at ~6 fps; 0.2–0.7 Mbit/s |
+| 2026-10-14 | Same, viewer 0.2.0 (menus, discovery, audio) | Discovery found "Marcos (192.168.1.19)"; VA-API H.264 ~33 fps; audio over PipeWire (48000 Hz, 2 ch, 16 bit); menu bar and letterboxed video correct (`SDV_SNAPSHOT`). Input not yet verified by a human |
