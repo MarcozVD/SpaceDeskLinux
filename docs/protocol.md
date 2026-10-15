@@ -100,7 +100,7 @@ with tiny P-frames. No Ping reply needed in 40 s sessions as long as acks flow.
 | 32 | u32 | quality 1..100 | JPEG / H.264 quality `[bin]` `[reg]` |
 | 36 | u16 | **encoding** | used when `@38` bit0 = 1 `[bin]` `[live]`; official viewer reads it from registry value `CompressionType` (default 5) `[viewer]` |
 | 38 | u8 | **flags**; bit0 = extended identification | also makes server send DISPLAY_SETTINGS `[bin]`; official viewer sets bit0 = 1 `[viewer]` |
-| 44 | i16 | fps: 0 → 30, 1 → 60, other = literal | `[bin]` `[reg]` (real clients 60, 90; 90 and 120 accepted by the server `[live]`) |
+| 44 | i16 | fps: 0 → 30, 1 → 60, other = literal | `[bin]` `[reg]` (real clients 60, 90; 90 and 120 accepted by the server `[live]`). The server paces capture at the requested rate plus its own overhead: 60 → ~45 fps, 90 → 55–61, 120 → 60 with a 60 fps source; extra flow-control acks (2–3 frames in flight) do not raise it `[live]` |
 | 46 | u16 | 0 `[js]`, 4 in the official viewer `[viewer]` |
 | 48 | u32 | **number of resolutions** (0..9) in the list below `[viewer]`; HTML5 calls it "resolution mode" (1 = client, 2 = client + custom) `[js]`; stored by server `[bin]` |
 | 52 + 4*i | u32 | width of resolution i, i = 0..n-1 `[viewer]` (HTML5: width `@52`, custom width `@56` = second list entry `[js]`) |

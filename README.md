@@ -97,7 +97,8 @@ on the network ("Servidores en tu red"); you can also type an IP. Full screen on
   shown in the list.
 - **Black screen or artifacts** — **Ajustes > Avanzado**: disable hardware H.264, or run with
   `--no-hw`.
-- **Low frame rate** — force H.264, lower the quality, enable Turbo, or use a cable instead of Wi-Fi.
+- **Low frame rate** — use the native resolution of the Linux screen (a larger custom resolution does
+  not add sharpness and lowers fps), prefer a cable over Wi-Fi, and check the `sdviewer -v` stats.
 - **No sound** — enable **Funciones > Audio** and check the output device in the system mixer.
 - **Keys stuck** — press Ctrl+Alt+M; the viewer releases modifiers automatically when a hotkey is
   used or the window loses focus.

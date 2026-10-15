@@ -122,8 +122,17 @@ both Ethernet and Wi-Fi may only accept the connection on one of them.
 | `settings.c` | `~/.config/sdviewer/settings.ini` persistence |
 | `nk.h`, `nk_impl.c` | Nuklear configuration and single implementation unit |
 
+VA-API: the free `iHD` driver (`intel-media-va-driver`) in Debian 12 has no video-processing
+entrypoint, so when a decoded H.264 picture larger than the video area must be scaled on the GPU the
+viewer prefers `i965` (unless `LIBVA_DRIVER_NAME` is set); `i965` provides the video processing for
+GPU scaling, while `iHD` still decodes H.264 fine.
+
 Debug aids:
 
+- `sdviewer -v` prints a per-stage profiling line every second:
+  `stats: <fps> fps <Mbit/s> <codec> <backend> <WxH> | wait <ms> dec <ms> xfer <ms> upload <ms> ms/frame, max <KiB>`
+  (time blocked waiting for the server, decode submit, VA-API surface download + copy, texture upload,
+  largest frame).
 - `SDV_SNAPSHOT=/path/frame.bmp` (optional `SDV_SNAPSHOT_MS`, default 6000) saves one rendered frame,
   which verifies the UI and letterboxing without a human at the screen.
 - `SDV_OPEN_DIALOG=resolutions|quality|autoconnect|advanced|about` opens a settings dialog at startup.
@@ -136,3 +145,4 @@ Debug aids:
 |---|---|---|
 | 2026-10-14 | Debian 12, GNOME Wayland, HD 620 → spacedesk 2.2.x on Windows 11 (Ethernet), H.264 q70 | Connected, VA-API decoding, 1366x768, ~30 fps steady after ~12 s at ~6 fps; 0.2–0.7 Mbit/s |
 | 2026-10-14 | Same, viewer 0.2.0 (menus, discovery, audio) | Discovery found "Marcos (192.168.1.19)"; VA-API H.264 ~33 fps; audio over PipeWire (48000 Hz, 2 ch, 16 bit); menu bar and letterboxed video correct (`SDV_SNAPSHOT`). Input not yet verified by a human |
+| 2026-10-15 | Debian 12, X11, HD 620 → spacedesk on Windows 11 i5-12450HX (direct Ethernet), 60 fps test animation | Native 1366x768, H.264 q100: steady 59–61 fps, viewer ~6 ms/frame (xfer 4.5, upload 1.2). 4K stream: viewer ~10 ms/frame but server ~31 fps. Server pacing: identification fps 60 → ~45 fps, 90 → 55–61, 120 → 60 |
