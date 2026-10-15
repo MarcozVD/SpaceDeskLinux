@@ -531,8 +531,10 @@ static int hotkey(struct sdv_app *a, const SDL_KeyboardEvent *k)
     if ((mod & KMOD_CTRL) && (mod & KMOD_ALT) && k->keysym.scancode == SDL_SCANCODE_M) {
         release_modifiers(a);
         app_release_mouse(a);
-        if (a->fullscreen)
+        if (a->fullscreen) {
             a->menu_open = !a->menu_open;
+            a->menu_until = SDL_GetTicks() + 3000;
+        }
         return 1;
     }
     if (a->set.mouse_mode == SDV_MOUSE_LOCAL_TOUCH && (mod & KMOD_ALT) && (mod & KMOD_SHIFT) &&
@@ -581,8 +583,10 @@ static void handle_event(struct sdv_app *a, SDL_Event *ev)
                 send_mouse(a, ev->motion.xrel, ev->motion.yrel, 0, 0);
             return;
         }
-        if (a->fullscreen && !a->menu_open && ev->motion.y <= 1 && ev->motion.which != SDL_TOUCH_MOUSEID)
+        if (a->fullscreen && !a->menu_open && ev->motion.y <= 1 && ev->motion.which != SDL_TOUCH_MOUSEID) {
             a->menu_open = 1;
+            a->menu_until = SDL_GetTicks() + 1000;
+        }
         if (live && !ui && a->touch_down && to_remote(a, ev->motion.x, ev->motion.y, &x, &y) == 0)
             send_touch(a, x, y, SD_TOUCH_ABSOLUTE);
         break;

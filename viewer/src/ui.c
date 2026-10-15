@@ -1205,9 +1205,20 @@ void ui_frame(struct sdv_app *a)
 {
     static const char *const k_release[] = { "Ctrl", "Alt", "M", NULL };
     int w, h, top, bottom;
-    int show_menu = !a->fullscreen || a->menu_open;
-    int show_status = a->set.status_bar && a->streaming;
+    int show_menu, show_status = a->set.status_bar && a->streaming;
     struct nk_rect area;
+
+    /* fullscreen: hide the menu bar again once the pointer has left it (or left the window) */
+    if (a->fullscreen && a->menu_open && a->dialog == SDV_DLG_NONE) {
+        struct nk_window *bar = nk_window_find(a->nk, "menubar");
+        int mx, my;
+        SDL_GetMouseState(&mx, &my);
+        if ((SDL_GetMouseFocus() == a->win && my <= SDV_MENU_H + 6) || (bar && bar->popup.win && bar->popup.active))
+            a->menu_until = SDL_GetTicks() + 800;
+        else if (SDL_TICKS_PASSED(SDL_GetTicks(), a->menu_until))
+            a->menu_open = 0;
+    }
+    show_menu = !a->fullscreen || a->menu_open;
 
     SDL_GetWindowSize(a->win, &w, &h);
     top = a->fullscreen ? 0 : SDV_MENU_H;
