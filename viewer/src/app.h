@@ -10,7 +10,7 @@
 #include "session.h"
 #include "settings.h"
 
-#define SDV_VERSION "0.2.0"
+#define SDV_VERSION "0.3.0"
 #define SDV_MENU_H 26
 #define SDV_STATUS_H 22
 

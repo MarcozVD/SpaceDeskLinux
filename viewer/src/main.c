@@ -662,7 +662,8 @@ static void usage(const char *argv0)
             "Usage: %s [options] [server]\n"
             "  -w, --windowed   start in a window even if 'full screen upon connect' is set\n"
             "      --no-hw      disable VA-API decoding for this run\n"
-            "  -v, --verbose    log connection details and statistics\n"
+            "  -v, --verbose    log connection details and per-frame timing every second\n"
+            "      --version    print the version and exit\n"
             "Hotkeys: Alt+Enter full screen, Ctrl+Alt+M menu / release mouse\n",
             argv0);
 }
@@ -674,6 +675,7 @@ int main(int argc, char **argv)
         { "no-hw", no_argument, NULL, 'H' },
         { "verbose", no_argument, NULL, 'v' },
         { "help", no_argument, NULL, 'h' },
+        { "version", no_argument, NULL, 'V' },
         { 0 },
     };
     static struct sdv_app app;
@@ -687,6 +689,7 @@ int main(int argc, char **argv)
         case 'w': windowed = 1; break;
         case 'H': no_hw = 1; break;
         case 'v': verbose = 1; break;
+        case 'V': printf("sdviewer %s\n", SDV_VERSION); return 0;
         default: usage(argv[0]); return c == 'h' ? 0 : 2;
         }
     }
@@ -760,7 +763,7 @@ int main(int argc, char **argv)
     while (!a->quit) {
         SDL_Event ev;
         nk_input_begin(a->nk);
-        if (SDL_WaitEventTimeout(&ev, a->streaming ? 8 : 50)) {
+        if (SDL_WaitEventTimeout(&ev, a->streaming ? 8 : 33)) {
             handle_event(a, &ev);
             while (SDL_PollEvent(&ev))
                 handle_event(a, &ev);
@@ -786,7 +789,7 @@ int main(int argc, char **argv)
         if (a->streaming)
             SDL_SetRenderDrawColor(a->ren, 0, 0, 0, 255);
         else
-            SDL_SetRenderDrawColor(a->ren, 11, 21, 36, 255);
+            SDL_SetRenderDrawColor(a->ren, 23, 24, 26, 255);
         SDL_RenderClear(a->ren);
         if (a->tex && a->streaming)
             SDL_RenderCopy(a->ren, a->tex, NULL, &a->video);
