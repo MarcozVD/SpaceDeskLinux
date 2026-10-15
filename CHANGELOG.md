@@ -3,6 +3,18 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.1] - 2026-10-15
+
+### Fixed
+
+- The menu bar stopped responding after closing a settings dialog from the connect screen: while a
+  dialog was open Nuklear marked the bar window read-only and the flag was never cleared.
+
+### Notes
+
+- Prebuilt x86_64 binaries are published on
+  [GitHub Releases](https://github.com/MarcozVD/SpaceDeskLinux/releases) starting with this version.
+
 ## [0.3.0] - 2026-10-15
 
 ### Added
@@ -32,4 +44,5 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - First H.264/JPEG viewer (see the git history for the first commits).
 
+[0.3.1]: https://github.com/MarcozVD/SpaceDeskLinux/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/MarcozVD/SpaceDeskLinux/compare/v0.2.0...v0.3.0

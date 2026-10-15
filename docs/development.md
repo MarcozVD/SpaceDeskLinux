@@ -150,6 +150,7 @@ Debug aids:
 | 2026-10-15 | Same, mouse-as-touch and absolute mapping | Touch at 640,360 of 1280x720 landed at 640,360 of a monitor at x=1280 (absolute) |
 | 2026-10-15 | packaging/install-user.sh into a temporary HOME | Binary, launcher and "SpaceDesk Linux" menu entry installed; the old `~/.config/sdviewer/server` migrated into `settings.ini` on first start |
 | 2026-10-15 | viewer 0.3.0 UI, `SDV_DEMO=1` + `SDV_OPEN_DIALOG` snapshots | Connect screen, connecting state and all five dialogs render correctly |
+| 2026-10-15 | viewer 0.3.1, nested `Xephyr :7` display, XTest clicks | Reproduced the 0.3.0 bug (close the Resolution dialog, click Ajustes: nothing opens); with 0.3.1 the Ajustes menu opens and "Calidad y rendimiento…" opens its dialog |
 
 ### Testing input without a human
 
@@ -157,4 +158,5 @@ Input can be driven on the X11 session with XTest (`python3` + `ctypes` on `libX
 the Windows side with a small `GetCursorPos`/`GetKeyState` polling script. Run the viewer with an
 isolated config (`XDG_CONFIG_HOME=/tmp/...`) so tests never change the user's settings. Only take an
 `SDV_SNAPSHOT` while `SDV_DEMO=1` is set or a test pattern covers the virtual monitor — never capture
-the real desktop.
+the real desktop. UI click tests can run inside a nested `Xephyr :7` display, so they never touch the
+user's desktop.

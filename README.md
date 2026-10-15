@@ -35,6 +35,22 @@ datronicsoft**.
 
 ## Install
 
+### Download
+
+Prebuilt x86_64 binaries are attached to each release at
+<https://github.com/MarcozVD/SpaceDeskLinux/releases> (asset `sdviewer-0.3.1-linux-x86_64` plus its
+`.sha256`):
+
+```sh
+chmod +x sdviewer-0.3.1-linux-x86_64
+sha256sum -c sdviewer-0.3.1-linux-x86_64.sha256
+./sdviewer-0.3.1-linux-x86_64
+```
+
+Built on Debian 12 (bookworm). Runtime packages: `libsdl2-2.0-0`, `libavcodec59`, `libavutil57`,
+`libturbojpeg0`, `libva2` (and `intel-media-va-driver` for hardware H.264). Building from source is
+still available below.
+
 **No root, via Docker** (build in a `debian:bookworm` container, then copy the binary):
 
 ```sh
