@@ -36,6 +36,14 @@ docker run --rm -v "$PWD":/src debian:bookworm sh /src/viewer/docker-build.sh
 ./dist/sdviewer <windows-ip>
 ```
 
+Install for the current user with a GNOME menu entry ("SpaceDesk Linux"), no root needed:
+
+```sh
+sh packaging/install-user.sh dist/sdviewer <windows-ip>
+```
+
+The server address lives in `~/.config/sdviewer/server`; the log in `~/.cache/sdviewer.log`.
+
 Or natively:
 
 ```sh

@@ -1,0 +1,26 @@
+#!/bin/sh
+# Menu launcher for sdviewer: reads the server address from the user config,
+# logs to ~/.cache/sdviewer.log and shows a notification if the viewer fails.
+config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/sdviewer"
+cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}"
+log="$cache_dir/sdviewer.log"
+
+server=$(head -n 1 "$config_dir/server" 2>/dev/null | tr -d '[:space:]')
+if [ -z "$server" ]; then
+    command -v notify-send >/dev/null &&
+        notify-send -i video-display "SpaceDesk Linux" "Falta la IP del servidor en $config_dir/server"
+    exit 1
+fi
+
+# SDL 2.26 picks X11 (Xwayland) by default; native Wayland works better under GNOME.
+if [ -n "$WAYLAND_DISPLAY" ] && [ -z "$SDL_VIDEODRIVER" ]; then
+    export SDL_VIDEODRIVER=wayland
+fi
+
+mkdir -p "$cache_dir"
+"$(dirname "$0")/sdviewer" -v "$server" >"$log" 2>&1
+rc=$?
+if [ "$rc" -ne 0 ] && command -v notify-send >/dev/null; then
+    notify-send -i video-display "SpaceDesk Linux" "No se pudo conectar a $server (detalles en $log)"
+fi
+exit "$rc"

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=SpaceDesk Linux
+GenericName=Pantalla extra
+Comment=Usar este equipo como monitor extra de un PC con spacedesk
+Exec=@BINDIR@/sdviewer-launch
+Icon=video-display
+Terminal=false
+Categories=Network;RemoteAccess;
+Keywords=spacedesk;monitor;pantalla;display;viewer;
+StartupNotify=false
