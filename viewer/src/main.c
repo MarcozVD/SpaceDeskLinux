@@ -102,6 +102,51 @@ static void update_screensaver(struct sdv_app *a)
         SDL_EnableScreenSaver();
 }
 
+/* Window icon: blue rounded tile with a white monitor outline, drawn at startup. */
+static void set_window_icon(SDL_Window *win)
+{
+    enum { S = 64 };
+    SDL_Surface *icon = SDL_CreateRGBSurfaceWithFormat(0, S, S, 32, SDL_PIXELFORMAT_ARGB8888);
+    Uint32 *px;
+
+    if (!icon)
+        return;
+    px = icon->pixels;
+    for (int y = 0; y < S; y++)
+        for (int x = 0; x < S; x++) {
+            int dx = x < 12 ? 12 - x : x > S - 13 ? x - (S - 13) : 0;
+            int dy = y < 12 ? 12 - y : y > S - 13 ? y - (S - 13) : 0;
+            int inside = dx * dx + dy * dy <= 144;
+            int screen = x >= 14 && x <= 49 && y >= 16 && y <= 40;
+            int screen_in = x >= 18 && x <= 45 && y >= 20 && y <= 36;
+            int stand = (x >= 29 && x <= 34 && y > 40 && y <= 46) || (x >= 22 && x <= 41 && y >= 46 && y <= 49);
+            Uint32 c = 0x00000000;
+            if (inside)
+                c = 0xFF2563EB + (Uint32)((y * 0x1A) / S) * 0x10000; /* blue, slightly lighter at the bottom */
+            if (inside && ((screen && !screen_in) || stand))
+                c = 0xFFFFFFFF;
+            px[y * (icon->pitch / 4) + x] = c;
+        }
+    SDL_SetWindowIcon(win, icon);
+    SDL_FreeSurface(icon);
+}
+
+/* Mouse-as-touch: Windows hides its own pointer for touch input, so keep a clear local one. */
+static void update_cursor(struct sdv_app *a)
+{
+    static SDL_Cursor *arrow, *hand;
+    int want_hand = a->streaming && a->set.mouse_mode == SDV_MOUSE_LOCAL_TOUCH && !ui_wants_input(a);
+
+    if (!arrow) {
+        arrow = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_ARROW);
+        hand = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_HAND);
+    }
+    if (!a->mouse_captured) {
+        SDL_SetCursor(want_hand && hand ? hand : arrow);
+        SDL_ShowCursor(SDL_ENABLE);
+    }
+}
+
 /* ---------- discovery ---------- */
 
 static void discovery_start(struct sdv_app *a)
@@ -654,6 +699,8 @@ int main(int argc, char **argv)
         fprintf(stderr, "SDL_CreateWindow: %s\n", SDL_GetError());
         return 1;
     }
+    set_window_icon(a->win);
+    SDL_SetWindowMinimumSize(a->win, 640, 480);
     a->ren = SDL_CreateRenderer(a->win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
     if (!a->ren)
         a->ren = SDL_CreateRenderer(a->win, -1, 0);
@@ -678,6 +725,16 @@ int main(int argc, char **argv)
         discovery_start(a);
     update_screensaver(a);
 
+    /* debugging aid: SDV_OPEN_DIALOG opens a settings dialog at startup (for screenshots) */
+    if (getenv("SDV_OPEN_DIALOG")) {
+        static const char *names[] = { "", "resolutions", "quality", "autoconnect", "advanced", "about" };
+        for (int i = 1; i < (int)(sizeof(names) / sizeof(names[0])); i++)
+            if (!strcmp(getenv("SDV_OPEN_DIALOG"), names[i])) {
+                a->edit = a->set;
+                a->dialog = (enum sdv_dialog)i;
+            }
+    }
+
     /* debugging aid: SDV_SNAPSHOT=/path/file.bmp saves one rendered frame after a few seconds */
     const char *snapshot = getenv("SDV_SNAPSHOT");
     Uint32 snapshot_at = SDL_GetTicks() + (getenv("SDV_SNAPSHOT_MS") ? (Uint32)atoi(getenv("SDV_SNAPSHOT_MS")) : 6000);
@@ -699,7 +756,11 @@ int main(int argc, char **argv)
         update_stats(a);
 
         ui_frame(a);
-        SDL_SetRenderDrawColor(a->ren, 0, 0, 0, 255);
+        update_cursor(a);
+        if (a->streaming)
+            SDL_SetRenderDrawColor(a->ren, 0, 0, 0, 255);
+        else
+            SDL_SetRenderDrawColor(a->ren, 11, 21, 36, 255);
         SDL_RenderClear(a->ren);
         if (a->tex && a->streaming)
             SDL_RenderCopy(a->ren, a->tex, NULL, &a->video);
