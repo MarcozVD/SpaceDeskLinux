@@ -151,6 +151,8 @@ Debug aids:
 | 2026-10-15 | packaging/install-user.sh into a temporary HOME | Binary, launcher and "SpaceDesk Linux" menu entry installed; the old `~/.config/sdviewer/server` migrated into `settings.ini` on first start |
 | 2026-10-15 | viewer 0.3.0 UI, `SDV_DEMO=1` + `SDV_OPEN_DIALOG` snapshots | Connect screen, connecting state and all five dialogs render correctly |
 | 2026-10-15 | viewer 0.3.1, nested `Xephyr :7` display, XTest clicks | Reproduced the 0.3.0 bug (close the Resolution dialog, click Ajustes: nothing opens); with 0.3.1 the Ajustes menu opens and "Calidad y rendimiento…" opens its dialog |
+| 2026-10-15 | viewer 0.3.2, isolated Xephyr display 1100x700, XTest | 0.3.1 kept the full-screen menu bar after the pointer moved away; 0.3.2 shows it at the top edge and hides it once the pointer leaves |
+| 2026-10-15 | `apt install ./sdviewer_0.3.2_amd64.deb` in a clean debian:bookworm container | Dependencies pulled, `sdviewer --version` prints 0.3.2, menu entry Exec=/usr/bin/sdviewer-launch, `apt remove` clean |
 
 ### Testing input without a human
 

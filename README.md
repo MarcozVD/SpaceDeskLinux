@@ -37,21 +37,30 @@ datronicsoft**.
 
 ### Download
 
-Prebuilt x86_64 binaries are attached to each release at
-<https://github.com/MarcozVD/SpaceDeskLinux/releases> (asset `sdviewer-0.3.1-linux-x86_64` plus its
-`.sha256`):
+Each release on <https://github.com/MarcozVD/SpaceDeskLinux/releases> ships a Debian package, the
+recommended way to install:
 
 ```sh
-chmod +x sdviewer-0.3.1-linux-x86_64
-sha256sum -c sdviewer-0.3.1-linux-x86_64.sha256
-./sdviewer-0.3.1-linux-x86_64
+sudo apt install ./sdviewer_0.3.2_amd64.deb
 ```
 
-Built on Debian 12 (bookworm). Runtime packages: `libsdl2-2.0-0`, `libavcodec59`, `libavutil57`,
+`apt` resolves the dependencies (the package is built on Debian 12 bookworm); launch **"SpaceDesk
+Linux"** from the menu or run `sdviewer`, and remove it with `sudo apt remove sdviewer`.
+
+A standalone binary is also attached (asset `sdviewer-0.3.2-linux-x86_64` plus its `.sha256`):
+
+```sh
+chmod +x sdviewer-0.3.2-linux-x86_64
+sha256sum -c sdviewer-0.3.2-linux-x86_64.sha256
+./sdviewer-0.3.2-linux-x86_64
+```
+
+Runtime packages for the standalone binary: `libsdl2-2.0-0`, `libavcodec59`, `libavutil57`,
 `libturbojpeg0`, `libva2` (and `intel-media-va-driver` for hardware H.264). Building from source is
 still available below.
 
-**No root, via Docker** (build in a `debian:bookworm` container, then copy the binary):
+**No root, via Docker** (build in a `debian:bookworm` container; the script writes the binary and the
+`.deb` package to `dist/`):
 
 ```sh
 docker run --rm -v "$PWD":/src debian:bookworm sh /src/viewer/docker-build.sh
@@ -86,6 +95,9 @@ sdviewer [-w] [--no-hw] [-v] [--version] [server]
 The server address is optional: without it the connect screen appears and lists the servers found
 on the network ("Equipos con spacedesk"); you can also type an IP. Full screen on connect is set in
 **Ajustes**.
+
+In full screen the menu bar appears when the pointer touches the top edge and hides again when the
+pointer moves away from it; **Ctrl+Alt+M** also shows it (and releases a captured mouse).
 
 ### Hotkeys
 
@@ -177,10 +189,10 @@ instructions and the viewer architecture.
 - [x] Feature parity with the official viewer (menus, settings, mouse modes, audio, discovery)
 - [x] Steady 60 fps at native resolution (server pacing, GPU scaling, early acks)
 - [x] Direct cable connection (no router)
+- [x] Debian package (`sdviewer_<version>_amd64.deb`)
 - [ ] Input verified by a human (mouse remote, mouse local, keyboard layout, touchscreen)
 - [ ] Re-test the new UI on a Wayland session
 - [ ] Pen, multi-touch, rotation
-- [ ] `.deb` package
 - [ ] TLS / password mode
 
 ## Third-party code
