@@ -307,6 +307,23 @@ static int bgrx_feed(struct sdv_decoder *d, const struct sd_framebuffer *fb,
     return fragment_done(d, fb, out);
 }
 
+/* Raw 4:2:0 frame, full size, planar (layout assumed I420, see docs/protocol.md). */
+static int yuv_feed(const struct sd_framebuffer *fb, const uint8_t *data, size_t len, struct sdv_image *out)
+{
+    int w = (int)fb->width, h = (int)fb->height;
+    int cw = (w + 1) / 2, ch = (h + 1) / 2;
+    size_t ysz = (size_t)w * h, csz = (size_t)cw * ch;
+
+    if (w <= 0 || h <= 0 || len < ysz + 2 * csz)
+        return 0;
+    if (image_reserve(out, SDV_FMT_I420, w, h) < 0)
+        return -1;
+    memcpy(out->plane[0], data, ysz);
+    memcpy(out->plane[1], data + ysz, csz);
+    memcpy(out->plane[2], data + ysz + csz, csz);
+    return 1;
+}
+
 /* ---------- public ---------- */
 
 struct sdv_decoder *sdv_decoder_new(int allow_hw)
@@ -344,6 +361,8 @@ int sdv_decoder_feed(struct sdv_decoder *d, const struct sd_framebuffer *fb,
         return jpeg_feed(d, fb, data, len, out);
     case SD_ENC_BGRX:
         return bgrx_feed(d, fb, data, len, out);
+    case SD_ENC_YUV420:
+        return yuv_feed(fb, data, len, out);
     default:
         fprintf(stderr, "decoder: unsupported encoding %u\n", fb->encoding);
         return -1;

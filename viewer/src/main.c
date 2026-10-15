@@ -1,6 +1,5 @@
-/* sdviewer: native Linux viewer for a spacedesk server. */
+/* SpaceDesk Linux: native viewer for spacedesk servers. */
 #define _GNU_SOURCE
-#include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
 #include <stdio.h>
@@ -11,95 +10,46 @@
 
 #include <SDL.h>
 
-#include "decoder.h"
+#include "app.h"
 #include "keymap.h"
-#include "net.h"
+#include "nk.h"
 #include "protocol.h"
 
-#define SDV_VERSION "0.1.0"
-#define OS_TYPE_UNKNOWN 0
+#define RECONNECT_DELAY_MS 3000
+#define TOAST_MS 4500
 
-struct options {
-    const char *host;
-    int port;
-    int width, height; /* 0 = size of the target display */
-    int fps;
-    int quality;
-    int encoding;
-    int allow_hw;
-    int windowed;
-    int display;
-    int verbose;
-};
+static int verbose;
 
-/* Latest decoded frame, handed from the network thread to the render loop. */
-struct frame_slot {
-    SDL_mutex *lock;
-    struct sdv_image images[2];
-    int front;
-    int fresh;
-};
-
-struct app {
-    struct options opt;
-    struct sdv_conn conn;
-    struct sdv_decoder *dec;
-    struct frame_slot slot;
-    Uint32 frame_event;
-    SDL_atomic_t running;
-    SDL_atomic_t frames_rx;
-    SDL_atomic_t bytes_rx;
-    int remote_w, remote_h; /* render thread only */
-};
-
-/* ---------- device identity ---------- */
-
-static void config_path(char *out, size_t n, const char *leaf)
-{
-    const char *xdg = getenv("XDG_CONFIG_HOME");
-    const char *home = getenv("HOME");
-    if (xdg && *xdg)
-        snprintf(out, n, "%s/sdviewer%s%s", xdg, leaf ? "/" : "", leaf ? leaf : "");
-    else
-        snprintf(out, n, "%s/.config/sdviewer%s%s", home ? home : ".", leaf ? "/" : "", leaf ? leaf : "");
-}
+/* ---------- identity ---------- */
 
 /* One stable GUID per installation: the server keys its per-device settings on it. */
 static void load_device_id(char *out, size_t n)
 {
-    char dir[512], path[600];
+    char path[600];
     unsigned char r[16];
     FILE *f;
     int fd;
 
-    config_path(path, sizeof(path), "device-id");
+    snprintf(path, sizeof(path), "%s/device-id", sdv_settings_dir());
     f = fopen(path, "r");
     if (f) {
-        if (fgets(out, (int)n, f)) {
-            out[strcspn(out, "\r\n")] = 0;
-            fclose(f);
-            if (out[0] == '{')
-                return;
-        } else {
-            fclose(f);
-        }
+        int ok = fgets(out, (int)n, f) != NULL;
+        fclose(f);
+        out[strcspn(out, "\r\n")] = 0;
+        if (ok && out[0] == '{')
+            return;
     }
     fd = open("/dev/urandom", O_RDONLY);
-    if (fd < 0 || read(fd, r, sizeof(r)) != (ssize_t)sizeof(r)) {
+    if (fd < 0 || read(fd, r, sizeof(r)) != (ssize_t)sizeof(r))
         for (size_t i = 0; i < sizeof(r); i++)
             r[i] = (unsigned char)(rand() ^ (int)SDL_GetPerformanceCounter());
-    }
     if (fd >= 0)
         close(fd);
     r[6] = (r[6] & 0x0F) | 0x40;
     r[8] = (r[8] & 0x3F) | 0x80;
-    snprintf(out, n,
-             "{%02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X}",
-             r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7],
-             r[8], r[9], r[10], r[11], r[12], r[13], r[14], r[15]);
-
-    config_path(dir, sizeof(dir), NULL);
-    mkdir(dir, 0755);
+    snprintf(out, n, "{%02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X}",
+             r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], r[9], r[10], r[11], r[12], r[13], r[14], r[15]);
+    mkdir(sdv_settings_dir(), 0755);
     f = fopen(path, "w");
     if (f) {
         fprintf(f, "%s\n", out);
@@ -107,137 +57,342 @@ static void load_device_id(char *out, size_t n)
     }
 }
 
-/* ---------- network thread ---------- */
+/* ---------- small helpers ---------- */
 
-static void send_packet(struct app *a, const void *buf, size_t len)
+void app_toast(struct sdv_app *a, const char *msg)
 {
-    if (sdv_conn_send(&a->conn, buf, len) < 0 && SDL_AtomicGet(&a->running))
-        fprintf(stderr, "net: send failed\n");
+    snprintf(a->toast, sizeof(a->toast), "%s", msg);
+    a->toast_until = SDL_GetTicks() + TOAST_MS;
 }
 
-static void publish_frame(struct app *a)
+static void send_packet(struct sdv_app *a, const uint8_t *pkt, size_t len)
 {
-    SDL_Event ev = { 0 };
-
-    SDL_LockMutex(a->slot.lock);
-    a->slot.front ^= 1;
-    a->slot.fresh = 1;
-    SDL_UnlockMutex(a->slot.lock);
-
-    ev.type = a->frame_event;
-    SDL_PushEvent(&ev);
+    if (a->sess)
+        sdv_session_send(a->sess, pkt, len);
 }
 
-static int net_thread(void *arg)
+static int to_remote(const struct sdv_app *a, int wx, int wy, int *rx, int *ry)
 {
-    struct app *a = arg;
-    uint8_t hdr[SD_HEADER_LEN], ack[SD_HEADER_LEN];
-    uint8_t *payload = NULL;
-    size_t cap = 0;
+    const SDL_Rect *v = &a->video;
 
-    sd_build_flow_ack(ack);
-    while (SDL_AtomicGet(&a->running)) {
-        uint32_t type, len;
-
-        if (sdv_conn_recv(&a->conn, hdr, sizeof(hdr)) < 0)
-            break;
-        type = sd_get_u32(hdr);
-        len = sd_get_u32(hdr + 4);
-        if (len > 64u * 1024 * 1024) {
-            fprintf(stderr, "net: implausible payload length %u, closing\n", len);
-            break;
-        }
-        if (len > cap) {
-            uint8_t *nb = realloc(payload, len);
-            if (!nb)
-                break;
-            payload = nb;
-            cap = len;
-        }
-        if (len && sdv_conn_recv(&a->conn, payload, len) < 0)
-            break;
-        SDL_AtomicAdd(&a->bytes_rx, (int)(len + SD_HEADER_LEN));
-
-        switch (type) {
-        case SD_T_FRAMEBUFFER: {
-            struct sd_framebuffer fb;
-            struct sdv_image *back;
-            int r;
-
-            sd_parse_framebuffer(hdr, &fb);
-            /* Only this thread writes the back image; the render loop reads the front one. */
-            SDL_LockMutex(a->slot.lock);
-            back = &a->slot.images[a->slot.front ^ 1];
-            SDL_UnlockMutex(a->slot.lock);
-            r = sdv_decoder_feed(a->dec, &fb, payload, len, back);
-            if (r > 0) {
-                publish_frame(a);
-                SDL_AtomicAdd(&a->frames_rx, 1);
-            }
-            /* Flow control: one ack per complete frame (fragments only ack on the last one). */
-            if (r > 0 || fb.encoding == SD_ENC_H264)
-                send_packet(a, ack, sizeof(ack));
-            break;
-        }
-        case SD_T_VISIBILITY:
-            if (a->opt.verbose)
-                fprintf(stderr, "server: visibility %u\n", sd_get_u32(hdr + 8));
-            break;
-        case SD_T_ERROR:
-            fprintf(stderr, "server: closed session (reason %u)\n", sd_get_u32(hdr + 8));
-            goto out;
-        default:
-            if (a->opt.verbose)
-                fprintf(stderr, "server: %s (%u bytes)\n", sd_type_name(type), len);
-            break;
-        }
-    }
-out:
-    if (SDL_AtomicGet(&a->running)) {
-        SDL_Event ev = { .type = SDL_QUIT };
-        fprintf(stderr, "net: connection lost\n");
-        SDL_PushEvent(&ev);
-    }
-    free(payload);
+    if (a->remote_w <= 0 || v->w <= 0 || v->h <= 0)
+        return -1;
+    if (wx < v->x || wy < v->y || wx >= v->x + v->w || wy >= v->y + v->h)
+        return -1;
+    *rx = (int)((int64_t)(wx - v->x) * a->remote_w / v->w);
+    *ry = (int)((int64_t)(wy - v->y) * a->remote_h / v->h);
     return 0;
+}
+
+static void update_title(struct sdv_app *a)
+{
+    char title[256];
+    if (a->streaming)
+        snprintf(title, sizeof(title), "SpaceDesk Linux - %s", a->host);
+    else
+        snprintf(title, sizeof(title), "SpaceDesk Linux");
+    SDL_SetWindowTitle(a->win, title);
+}
+
+static void update_screensaver(struct sdv_app *a)
+{
+    if (a->streaming && a->set.keep_monitor_active)
+        SDL_DisableScreenSaver();
+    else
+        SDL_EnableScreenSaver();
+}
+
+/* ---------- discovery ---------- */
+
+static void discovery_start(struct sdv_app *a)
+{
+    const char *extra[SDV_MAX_RECENT + 1] = { 0 };
+    int n = 0;
+
+    if (a->disc)
+        return;
+    for (int i = 0; i < SDV_MAX_RECENT; i++)
+        if (a->set.recent[i][0])
+            extra[n++] = a->set.recent[i];
+    a->disc = sdv_discovery_start(extra);
+}
+
+static void discovery_stop(struct sdv_app *a)
+{
+    sdv_discovery_stop(a->disc);
+    a->disc = NULL;
+}
+
+/* ---------- mouse capture ---------- */
+
+static void capture_mouse(struct sdv_app *a)
+{
+    if (a->mouse_captured)
+        return;
+    if (SDL_SetRelativeMouseMode(SDL_TRUE) == 0) {
+        a->mouse_captured = 1;
+        app_toast(a, "Mouse capturado. Ctrl+Alt+M libera el mouse y abre el menú.");
+    }
+}
+
+void app_release_mouse(struct sdv_app *a)
+{
+    if (a->touch_down) {
+        uint8_t pkt[SD_HEADER_LEN];
+        sd_build_touch(pkt, 0, 0, (uint32_t)a->remote_w, (uint32_t)a->remote_h,
+                       SD_TOUCH_ABSOLUTE | SD_TOUCH_UP, SDL_GetTicks());
+        send_packet(a, pkt, sizeof(pkt));
+        a->touch_down = 0;
+    }
+    if (!a->mouse_captured)
+        return;
+    SDL_SetRelativeMouseMode(SDL_FALSE);
+    a->mouse_captured = 0;
+}
+
+/* ---------- sessions ---------- */
+
+static void build_session_config(struct sdv_app *a, struct sdv_session_config *c)
+{
+    struct sdv_settings *s = &a->set;
+    int w, h;
+
+    memset(c, 0, sizeof(*c));
+    snprintf(c->host, sizeof(c->host), "%s", a->host);
+    c->port = SD_PORT;
+    snprintf(c->device_id, sizeof(c->device_id), "%s", a->device_id);
+    snprintf(c->name, sizeof(c->name), "%s", a->name);
+    c->allow_hw = s->hw_decode && !a->force_no_hw;
+
+    if (s->custom_resolution) {
+        w = s->custom_width;
+        h = s->custom_height;
+    } else {
+        SDL_DisplayMode m;
+        int idx = SDL_GetWindowDisplayIndex(a->win);
+        if (idx >= 0 && SDL_GetDesktopDisplayMode(idx, &m) == 0) {
+            w = m.w;
+            h = m.h;
+        } else {
+            w = 1280;
+            h = 720;
+        }
+    }
+    if (s->turbo) {
+        w = (w / 2) & ~1;
+        h = (h / 2) & ~1;
+    }
+    c->ident.os_type = SD_OS_TYPE_VIEWER;
+    c->ident.quality = (uint32_t)s->quality;
+    c->ident.fps = (uint16_t)s->fps;
+    c->ident.nres = 1;
+    c->ident.res_w[0] = (uint32_t)w;
+    c->ident.res_h[0] = (uint32_t)h;
+    if (s->yuv)
+        c->ident.encoding = SD_ENC_YUV420;
+    else
+        switch (s->encoding) {
+        case SDV_ENC_PREF_H264: c->ident.encoding = SD_ENC_H264; break;
+        case SDV_ENC_PREF_JPEG: c->ident.encoding = SD_ENC_JPEG; break;
+        case SDV_ENC_PREF_OFF: c->ident.encoding = SD_ENC_BGRX; break;
+        default: c->ident.encoding = SD_ENC_AUTO; break;
+        }
+}
+
+static void stop_sessions(struct sdv_app *a)
+{
+    app_release_mouse(a);
+    sdv_session_stop(a->sess);
+    a->sess = NULL;
+    sdv_audio_stop(a->audio);
+    a->audio = NULL;
+    if (a->tex)
+        SDL_DestroyTexture(a->tex);
+    a->tex = NULL;
+    a->remote_w = a->remote_h = 0;
+    a->streaming = 0;
+}
+
+void app_connect(struct sdv_app *a, const char *host)
+{
+    struct sdv_session_config cfg;
+
+    if (!host || !*host)
+        return;
+    if (host != a->host)
+        snprintf(a->host, sizeof(a->host), "%s", host);
+    stop_sessions(a);
+    discovery_stop(a);
+    a->reconnect_at = 0;
+    a->menu_open = 0;
+    snprintf(a->message, sizeof(a->message), "Conectando a %s...", a->host);
+
+    if (a->set.display_enabled) {
+        build_session_config(a, &cfg);
+        if (verbose)
+            fprintf(stderr, "connect %s: %ux%u@%u encoding %u quality %u\n", a->host, cfg.ident.res_w[0],
+                    cfg.ident.res_h[0], cfg.ident.fps, cfg.ident.encoding, cfg.ident.quality);
+        a->sess = sdv_session_start(&cfg, a->ev_frame, a->ev_state);
+    }
+    if (a->set.audio_enabled)
+        a->audio = sdv_audio_start(a->host, SD_PORT, a->device_id, a->name);
+    if (!a->sess && !a->audio) {
+        snprintf(a->message, sizeof(a->message), "Activa Pantalla o Audio en el menú Funciones para conectar.");
+        discovery_start(a);
+    }
+    a->stats_t0 = SDL_GetTicks();
+    a->stats_rx = a->stats_tx = 0;
+    a->stats_frames = 0;
+    update_title(a);
+}
+
+void app_disconnect(struct sdv_app *a, const char *message)
+{
+    stop_sessions(a);
+    a->host[0] = 0;
+    a->reconnect_at = 0;
+    snprintf(a->message, sizeof(a->message), "%s", message ? message : "");
+    if (a->fullscreen)
+        app_set_fullscreen(a, 0);
+    discovery_start(a);
+    update_title(a);
+    update_screensaver(a);
+}
+
+void app_apply_settings(struct sdv_app *a, int reconnect)
+{
+    if (sdv_settings_save(&a->set) < 0)
+        app_toast(a, "No se pudieron guardar los ajustes");
+    update_screensaver(a);
+    if (a->set.mouse_mode != SDV_MOUSE_REMOTE)
+        app_release_mouse(a);
+    if (reconnect && a->host[0] && (a->sess || a->audio || a->streaming))
+        app_connect(a, a->host);
+}
+
+void app_set_fullscreen(struct sdv_app *a, int on)
+{
+    if (SDL_SetWindowFullscreen(a->win, on ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0) == 0) {
+        a->fullscreen = on;
+        a->menu_open = 0;
+        if (on)
+            app_toast(a, "Pantalla completa. Ctrl+Alt+M muestra el menú, Alt+Enter sale.");
+    }
+}
+
+/* Polls the display/audio sessions and reacts to state changes. */
+static void check_sessions(struct sdv_app *a)
+{
+    char err[192] = "";
+
+    if (a->sess) {
+        enum sdv_session_state st = sdv_session_state(a->sess, err, sizeof(err));
+        if (st == SDV_STATE_STREAMING && !a->streaming) {
+            a->streaming = 1;
+            a->message[0] = 0;
+            sdv_settings_remember(&a->set, a->host);
+            sdv_settings_save(&a->set);
+            if (a->set.fullscreen_on_connect && !a->force_windowed && !a->fullscreen)
+                app_set_fullscreen(a, 1);
+            if (a->set.mouse_mode == SDV_MOUSE_REMOTE)
+                app_toast(a, "Conectado. Haz clic en la pantalla para usar el mouse; Ctrl+Alt+M abre el menú.");
+            update_title(a);
+            update_screensaver(a);
+        } else if (st == SDV_STATE_FAILED || st == SDV_STATE_CLOSED) {
+            char host[128];
+            int retry = a->set.autoconnect == SDV_AUTOCONNECT_ADDRESS || st == SDV_STATE_CLOSED;
+            snprintf(host, sizeof(host), "%s", a->host);
+            app_disconnect(a, err[0] ? err : "Desconectado");
+            if (retry) {
+                /* keep trying like the official viewer does after a power/network event */
+                snprintf(a->host, sizeof(a->host), "%s", host);
+                a->reconnect_at = SDL_GetTicks() + RECONNECT_DELAY_MS;
+                snprintf(a->message + strlen(a->message), sizeof(a->message) - strlen(a->message),
+                         " - reintentando...");
+            }
+        }
+    } else if (a->audio && !a->set.display_enabled) {
+        int st = sdv_audio_status(a->audio, err, sizeof(err));
+        if (st == 1 && !a->streaming) {
+            a->streaming = 1;
+            a->message[0] = 0;
+            update_title(a);
+        }
+    }
+    if (a->audio) {
+        int st = sdv_audio_status(a->audio, err, sizeof(err));
+        if (st < 0) {
+            app_toast(a, err);
+            sdv_audio_stop(a->audio);
+            a->audio = NULL;
+        }
+    }
+    if (a->reconnect_at && SDL_TICKS_PASSED(SDL_GetTicks(), a->reconnect_at) && a->host[0])
+        app_connect(a, a->host);
+}
+
+static void upload_frame(void *user, const struct sdv_image *img)
+{
+    static const Uint32 sdl_fmt[] = {
+        [SDV_FMT_BGRX] = SDL_PIXELFORMAT_RGB888,
+        [SDV_FMT_NV12] = SDL_PIXELFORMAT_NV12,
+        [SDV_FMT_I420] = SDL_PIXELFORMAT_IYUV,
+    };
+    struct sdv_app *a = user;
+    Uint32 fmt = 0;
+    int tw = 0, th = 0;
+
+    if (img->fmt == SDV_FMT_NONE)
+        return;
+    if (a->tex)
+        SDL_QueryTexture(a->tex, &fmt, NULL, &tw, &th);
+    if (!a->tex || fmt != sdl_fmt[img->fmt] || tw != img->width || th != img->height) {
+        if (a->tex)
+            SDL_DestroyTexture(a->tex);
+        a->tex = SDL_CreateTexture(a->ren, sdl_fmt[img->fmt], SDL_TEXTUREACCESS_STREAMING, img->width, img->height);
+        if (!a->tex) {
+            fprintf(stderr, "render: %s\n", SDL_GetError());
+            return;
+        }
+        a->remote_w = img->width;
+        a->remote_h = img->height;
+    }
+    switch (img->fmt) {
+    case SDV_FMT_BGRX:
+        SDL_UpdateTexture(a->tex, NULL, img->plane[0], img->pitch[0]);
+        break;
+    case SDV_FMT_NV12:
+        SDL_UpdateNVTexture(a->tex, NULL, img->plane[0], img->pitch[0], img->plane[1], img->pitch[1]);
+        break;
+    case SDV_FMT_I420:
+        SDL_UpdateYUVTexture(a->tex, NULL, img->plane[0], img->pitch[0], img->plane[1], img->pitch[1],
+                             img->plane[2], img->pitch[2]);
+        break;
+    default:
+        break;
+    }
+}
+
+static void update_stats(struct sdv_app *a)
+{
+    struct sdv_session_stats st;
+    Uint32 now = SDL_GetTicks(), dt = now - a->stats_t0;
+
+    if (!a->sess || dt < 1000)
+        return;
+    sdv_session_get_stats(a->sess, &st);
+    a->fps = (st.frames - a->stats_frames) * 1000.0 / dt;
+    a->mbps = (st.bytes_rx - a->stats_rx) * 8.0 / 1000.0 / dt;
+    if (verbose)
+        fprintf(stderr, "stats: %.0f fps %.2f Mbit/s %s %s\n", a->fps, a->mbps, sd_encoding_name(st.encoding),
+                st.h264_backend ? st.h264_backend : "");
+    a->stats_frames = st.frames;
+    a->stats_rx = st.bytes_rx;
+    a->stats_tx = st.bytes_tx;
+    a->stats_t0 = now;
 }
 
 /* ---------- input ---------- */
-
-static Uint32 now_ms(void)
-{
-    return SDL_GetTicks() % 1000;
-}
-
-/* With SDL_RenderSetLogicalSize active, SDL already rewrites mouse coordinates to
- * logical (= remote desktop) pixels and finger coordinates to 0..1 of the logical area. */
-static int to_remote(const struct app *a, float lx, float ly, int *rx, int *ry)
-{
-    if (a->remote_w <= 0 || a->remote_h <= 0)
-        return -1;
-    if (lx < 0 || ly < 0 || lx >= a->remote_w || ly >= a->remote_h)
-        return -1;
-    *rx = (int)lx;
-    *ry = (int)ly;
-    return 0;
-}
-
-/* Absolute pointer position: the server ignores MOUSEEVENTF_ABSOLUTE and applies
- * pointer acceleration to relative moves, but a hovering touch contact is mapped
- * absolutely onto the virtual monitor (see docs/protocol.md). */
-static void send_pointer(struct app *a, int x, int y)
-{
-    uint8_t pkt[SD_HEADER_LEN];
-    sd_build_touch(pkt, x, y, (uint32_t)a->remote_w, (uint32_t)a->remote_h, SD_TOUCH_ABSOLUTE, 0, now_ms());
-    send_packet(a, pkt, sizeof(pkt));
-}
-
-static void send_buttons(struct app *a, uint32_t flags, int32_t data)
-{
-    uint8_t pkt[SD_HEADER_LEN];
-    sd_build_mouse(pkt, 0, 0, data, flags);
-    send_packet(a, pkt, sizeof(pkt));
-}
 
 static uint32_t button_flags(Uint8 button, int down)
 {
@@ -249,17 +404,28 @@ static uint32_t button_flags(Uint8 button, int down)
     }
 }
 
-static void handle_key(struct app *a, const SDL_KeyboardEvent *k)
+static void send_mouse(struct sdv_app *a, int dx, int dy, int wheel, uint32_t flags)
+{
+    uint8_t pkt[SD_HEADER_LEN];
+    sd_build_mouse(pkt, dx, dy, wheel, flags);
+    send_packet(a, pkt, sizeof(pkt));
+}
+
+static void send_touch(struct sdv_app *a, int x, int y, uint32_t flags)
+{
+    uint8_t pkt[SD_HEADER_LEN];
+    sd_build_touch(pkt, x, y, (uint32_t)a->remote_w, (uint32_t)a->remote_h, flags, SDL_GetTicks());
+    send_packet(a, pkt, sizeof(pkt));
+}
+
+static void send_key(struct sdv_app *a, const SDL_KeyboardEvent *k)
 {
     struct sdv_key key;
     uint8_t pkt[SD_HEADER_LEN];
-    uint32_t flags = SD_KEY_SCANCODE;
+    uint32_t flags = 0;
 
-    if (sdv_keymap_lookup(k->keysym.scancode, &key) < 0) {
-        if (a->opt.verbose)
-            fprintf(stderr, "input: unmapped key %s\n", SDL_GetScancodeName(k->keysym.scancode));
+    if (sdv_keymap_lookup(k->keysym.scancode, &key) < 0)
         return;
-    }
     if (key.extended)
         flags |= SD_KEY_EXTENDED;
     if (k->type == SDL_KEYUP)
@@ -268,71 +434,161 @@ static void handle_key(struct app *a, const SDL_KeyboardEvent *k)
     send_packet(a, pkt, sizeof(pkt));
 }
 
-/* Local hotkeys (not forwarded): Ctrl+Alt+Q quit, Ctrl+Alt+F toggle fullscreen. */
-static int handle_hotkey(SDL_Window *win, const SDL_KeyboardEvent *k)
+/* Modifiers pressed before a local hotkey or a focus change already reached Windows;
+ * release them there so they do not stay stuck. */
+static void release_modifiers(struct sdv_app *a)
+{
+    static const SDL_Scancode mods[] = {
+        SDL_SCANCODE_LCTRL, SDL_SCANCODE_RCTRL, SDL_SCANCODE_LALT, SDL_SCANCODE_RALT,
+        SDL_SCANCODE_LSHIFT, SDL_SCANCODE_RSHIFT, SDL_SCANCODE_LGUI, SDL_SCANCODE_RGUI,
+    };
+    SDL_KeyboardEvent k = { .type = SDL_KEYUP };
+
+    if (!a->sess || !a->streaming)
+        return;
+    for (size_t i = 0; i < sizeof(mods) / sizeof(mods[0]); i++) {
+        k.keysym.scancode = mods[i];
+        send_key(a, &k);
+    }
+}
+
+/* Local hotkeys; returns 1 when the key was consumed. */
+static int hotkey(struct sdv_app *a, const SDL_KeyboardEvent *k)
 {
     SDL_Keymod mod = SDL_GetModState();
 
-    if (k->type != SDL_KEYDOWN || !(mod & KMOD_CTRL) || !(mod & KMOD_ALT))
-        return 0;
-    if (k->keysym.scancode == SDL_SCANCODE_Q) {
-        SDL_Event ev = { .type = SDL_QUIT };
-        SDL_PushEvent(&ev);
+    if (k->type != SDL_KEYDOWN || k->repeat)
+        return k->type == SDL_KEYDOWN && k->repeat && (mod & KMOD_CTRL) && (mod & KMOD_ALT) &&
+               k->keysym.scancode == SDL_SCANCODE_M;
+    if ((mod & KMOD_ALT) && (k->keysym.scancode == SDL_SCANCODE_RETURN || k->keysym.scancode == SDL_SCANCODE_KP_ENTER)) {
+        release_modifiers(a);
+        app_set_fullscreen(a, !a->fullscreen);
         return 1;
     }
-    if (k->keysym.scancode == SDL_SCANCODE_F) {
-        Uint32 fs = SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN_DESKTOP;
-        SDL_SetWindowFullscreen(win, fs ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
+    if ((mod & KMOD_CTRL) && (mod & KMOD_ALT) && k->keysym.scancode == SDL_SCANCODE_M) {
+        release_modifiers(a);
+        app_release_mouse(a);
+        if (a->fullscreen)
+            a->menu_open = !a->menu_open;
         return 1;
+    }
+    if (a->set.mouse_mode == SDV_MOUSE_LOCAL_TOUCH && (mod & KMOD_ALT) && (mod & KMOD_SHIFT) &&
+        (k->keysym.scancode == SDL_SCANCODE_LSHIFT || k->keysym.scancode == SDL_SCANCODE_RSHIFT ||
+         k->keysym.scancode == SDL_SCANCODE_LALT || k->keysym.scancode == SDL_SCANCODE_RALT)) {
+        app_release_mouse(a);
+        a->set.mouse_mode = SDV_MOUSE_REMOTE;
+        app_apply_settings(a, 0);
+        app_toast(a, "Emulación táctil desactivada: modo Mouse remoto.");
+        return 0; /* the modifier itself still reaches Windows */
     }
     return 0;
 }
 
-/* ---------- rendering ---------- */
-
-static SDL_Texture *upload(struct app *a, SDL_Renderer *ren, SDL_Texture *tex, const struct sdv_image *img)
+static void handle_event(struct sdv_app *a, SDL_Event *ev)
 {
-    static const Uint32 sdl_fmt[] = {
-        [SDV_FMT_BGRX] = SDL_PIXELFORMAT_RGB888,
-        [SDV_FMT_NV12] = SDL_PIXELFORMAT_NV12,
-        [SDV_FMT_I420] = SDL_PIXELFORMAT_IYUV,
-    };
-    Uint32 fmt;
-    int tw = 0, th = 0;
+    int x, y, live = a->streaming && a->sess && a->remote_w > 0;
+    int ui = ui_wants_input(a);
 
-    if (img->fmt == SDV_FMT_NONE)
-        return tex;
-    if (tex)
-        SDL_QueryTexture(tex, &fmt, NULL, &tw, &th);
-    if (!tex || fmt != sdl_fmt[img->fmt] || tw != img->width || th != img->height) {
-        if (tex)
-            SDL_DestroyTexture(tex);
-        tex = SDL_CreateTexture(ren, sdl_fmt[img->fmt], SDL_TEXTUREACCESS_STREAMING,
-                                img->width, img->height);
-        if (!tex) {
-            fprintf(stderr, "render: SDL_CreateTexture: %s\n", SDL_GetError());
-            return NULL;
+    switch (ev->type) {
+    case SDL_QUIT:
+        a->quit = 1;
+        return;
+    case SDL_WINDOWEVENT:
+        if (ev->window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
+            release_modifiers(a);
+            app_release_mouse(a);
         }
-        SDL_RenderSetLogicalSize(ren, img->width, img->height);
-        a->remote_w = img->width;
-        a->remote_h = img->height;
-        fprintf(stderr, "render: remote desktop %dx%d\n", img->width, img->height);
+        break;
+    case SDL_KEYDOWN:
+    case SDL_KEYUP:
+        if (hotkey(a, &ev->key))
+            return;
+        if (live && !ui && a->set.keyboard_enabled) {
+            send_key(a, &ev->key);
+            return;
+        }
+        break;
+    case SDL_TEXTINPUT:
+        if (live && !ui)
+            return;
+        break;
+    case SDL_MOUSEMOTION:
+        if (a->mouse_captured) {
+            if (live)
+                send_mouse(a, ev->motion.xrel, ev->motion.yrel, 0, 0);
+            return;
+        }
+        if (a->fullscreen && !a->menu_open && ev->motion.y <= 1 && ev->motion.which != SDL_TOUCH_MOUSEID)
+            a->menu_open = 1;
+        if (live && !ui && a->touch_down && to_remote(a, ev->motion.x, ev->motion.y, &x, &y) == 0)
+            send_touch(a, x, y, SD_TOUCH_ABSOLUTE);
+        break;
+    case SDL_MOUSEBUTTONDOWN:
+    case SDL_MOUSEBUTTONUP: {
+        int down = ev->type == SDL_MOUSEBUTTONDOWN;
+        if (a->mouse_captured) {
+            if (live && button_flags(ev->button.button, down))
+                send_mouse(a, 0, 0, 0, button_flags(ev->button.button, down));
+            return;
+        }
+        if (ev->button.which == SDL_TOUCH_MOUSEID)
+            break; /* touchscreen taps are handled as fingers; keep them for the UI only */
+        if (!live || ui)
+            break;
+        if (to_remote(a, ev->button.x, ev->button.y, &x, &y) < 0) {
+            if (a->menu_open && down)
+                a->menu_open = 0;
+            break;
+        }
+        if (a->menu_open && down) {
+            a->menu_open = 0;
+            return;
+        }
+        if (a->set.mouse_mode == SDV_MOUSE_REMOTE) {
+            if (down) {
+                capture_mouse(a);
+                if (button_flags(ev->button.button, 1))
+                    send_mouse(a, 0, 0, 0, button_flags(ev->button.button, 1));
+            }
+            return;
+        }
+        /* mouse local: the left button drives one touch contact */
+        if (ev->button.button == SDL_BUTTON_LEFT) {
+            send_touch(a, x, y, SD_TOUCH_ABSOLUTE | (down ? SD_TOUCH_DOWN : SD_TOUCH_UP));
+            a->touch_down = down;
+        }
+        return;
     }
-    switch (img->fmt) {
-    case SDV_FMT_BGRX:
-        SDL_UpdateTexture(tex, NULL, img->plane[0], img->pitch[0]);
+    case SDL_MOUSEWHEEL:
+        if (a->mouse_captured || (live && !ui)) {
+            if (live && ev->wheel.y)
+                send_mouse(a, 0, 0, ev->wheel.y * SD_WHEEL_DELTA, SD_MOUSE_WHEEL);
+            if (live && ev->wheel.x)
+                send_mouse(a, 0, 0, ev->wheel.x * SD_WHEEL_DELTA, SD_MOUSE_HWHEEL);
+            return;
+        }
         break;
-    case SDV_FMT_NV12:
-        SDL_UpdateNVTexture(tex, NULL, img->plane[0], img->pitch[0], img->plane[1], img->pitch[1]);
-        break;
-    case SDV_FMT_I420:
-        SDL_UpdateYUVTexture(tex, NULL, img->plane[0], img->pitch[0], img->plane[1], img->pitch[1],
-                             img->plane[2], img->pitch[2]);
-        break;
+    case SDL_FINGERDOWN:
+    case SDL_FINGERMOTION:
+    case SDL_FINGERUP: {
+        int ww, wh;
+        uint32_t flags = a->set.touch_mode == SDV_TOUCH_ABSOLUTE ? SD_TOUCH_ABSOLUTE : 0;
+        if (!live || ui || a->set.touch_mode == SDV_TOUCH_OFF)
+            break;
+        SDL_GetWindowSize(a->win, &ww, &wh);
+        if (to_remote(a, (int)(ev->tfinger.x * ww), (int)(ev->tfinger.y * wh), &x, &y) < 0)
+            break;
+        if (ev->type == SDL_FINGERDOWN)
+            flags |= SD_TOUCH_DOWN;
+        else if (ev->type == SDL_FINGERUP)
+            flags |= SD_TOUCH_UP;
+        send_touch(a, x, y, flags);
+        return;
+    }
     default:
         break;
     }
-    return tex;
+    nk_sdl_handle_event(ev);
 }
 
 /* ---------- main ---------- */
@@ -340,277 +596,133 @@ static SDL_Texture *upload(struct app *a, SDL_Renderer *ren, SDL_Texture *tex, c
 static void usage(const char *argv0)
 {
     fprintf(stderr,
-            "Usage: %s [options] <server-host>\n"
-            "  -p, --port N         server port (default %d)\n"
-            "  -s, --size WxH       requested desktop size (default: target display size)\n"
-            "  -f, --fps N          frames per second (default 60)\n"
-            "  -q, --quality N      encoder quality 1-100 (default 70)\n"
-            "  -j, --jpeg           use JPEG instead of H.264\n"
-            "      --no-hw          disable VA-API decoding\n"
-            "  -w, --windowed       start in a window instead of fullscreen\n"
-            "  -d, --display N      SDL display index for fullscreen (default 0)\n"
-            "  -v, --verbose        log protocol events and statistics\n"
-            "Hotkeys: Ctrl+Alt+F fullscreen, Ctrl+Alt+Q quit\n",
-            argv0, SD_PORT);
-}
-
-static int parse_args(int argc, char **argv, struct options *o)
-{
-    static const struct option longopts[] = {
-        { "port", required_argument, NULL, 'p' },
-        { "size", required_argument, NULL, 's' },
-        { "fps", required_argument, NULL, 'f' },
-        { "quality", required_argument, NULL, 'q' },
-        { "jpeg", no_argument, NULL, 'j' },
-        { "no-hw", no_argument, NULL, 'H' },
-        { "windowed", no_argument, NULL, 'w' },
-        { "display", required_argument, NULL, 'd' },
-        { "verbose", no_argument, NULL, 'v' },
-        { "help", no_argument, NULL, 'h' },
-        { 0 },
-    };
-    int c;
-
-    *o = (struct options){ .port = SD_PORT, .fps = 60, .quality = 70,
-                           .encoding = SD_ENC_H264, .allow_hw = 1 };
-    while ((c = getopt_long(argc, argv, "p:s:f:q:jwd:vh", longopts, NULL)) != -1) {
-        switch (c) {
-        case 'p': o->port = atoi(optarg); break;
-        case 's':
-            if (sscanf(optarg, "%dx%d", &o->width, &o->height) != 2)
-                return -1;
-            break;
-        case 'f': o->fps = atoi(optarg); break;
-        case 'q': o->quality = atoi(optarg); break;
-        case 'j': o->encoding = SD_ENC_JPEG; break;
-        case 'H': o->allow_hw = 0; break;
-        case 'w': o->windowed = 1; break;
-        case 'd': o->display = atoi(optarg); break;
-        case 'v': o->verbose = 1; break;
-        default: return -1;
-        }
-    }
-    if (optind != argc - 1)
-        return -1;
-    o->host = argv[optind];
-    /* fps 0 and 1 are aliases for 30 and 60 on the wire */
-    if (o->fps < 2)
-        o->fps = 60;
-    if (o->quality < 1 || o->quality > 100)
-        o->quality = 70;
-    return 0;
+            "Usage: %s [options] [server]\n"
+            "  -w, --windowed   start in a window even if 'full screen upon connect' is set\n"
+            "      --no-hw      disable VA-API decoding for this run\n"
+            "  -v, --verbose    log connection details and statistics\n"
+            "Hotkeys: Alt+Enter full screen, Ctrl+Alt+M menu / release mouse\n",
+            argv0);
 }
 
 int main(int argc, char **argv)
 {
-    struct app a = { 0 };
-    SDL_Window *win;
-    SDL_Renderer *ren;
-    SDL_Texture *tex = NULL;
-    SDL_Thread *thr;
-    SDL_DisplayMode mode;
-    struct sd_ident_params ip;
-    uint8_t ident[SD_HEADER_LEN + SD_IDENT_PAYLOAD_LEN], bye[SD_DISCONNECT_LEN];
-    char device_id[64], name[128], host[64];
-    Uint32 stats_t0;
-    int done = 0;
+    static const struct option longopts[] = {
+        { "windowed", no_argument, NULL, 'w' },
+        { "no-hw", no_argument, NULL, 'H' },
+        { "verbose", no_argument, NULL, 'v' },
+        { "help", no_argument, NULL, 'h' },
+        { 0 },
+    };
+    static struct sdv_app app;
+    struct sdv_app *a = &app;
+    const char *cli_host = NULL;
+    int windowed = 0, no_hw = 0, c;
+    char hostname[64];
 
-    if (parse_args(argc, argv, &a.opt) < 0) {
-        usage(argv[0]);
-        return 2;
+    while ((c = getopt_long(argc, argv, "wvh", longopts, NULL)) != -1) {
+        switch (c) {
+        case 'w': windowed = 1; break;
+        case 'H': no_hw = 1; break;
+        case 'v': verbose = 1; break;
+        default: usage(argv[0]); return c == 'h' ? 0 : 2;
+        }
     }
+    if (optind < argc)
+        cli_host = argv[optind];
+
+    sdv_settings_load(&a->set);
+    a->force_no_hw = no_hw;
+    a->force_windowed = windowed;
+    load_device_id(a->device_id, sizeof(a->device_id));
+    if (gethostname(hostname, sizeof(hostname)) != 0)
+        snprintf(hostname, sizeof(hostname), "linux");
+    hostname[sizeof(hostname) - 1] = 0;
+    snprintf(a->name, sizeof(a->name), "%s", hostname);
 
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
     SDL_SetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0");
     SDL_SetHint(SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");
-    SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
+    SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "0");
+    SDL_SetHint(SDL_HINT_APP_NAME, "SpaceDesk Linux");
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) < 0) {
         fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
         return 1;
     }
-    if (a.opt.display >= SDL_GetNumVideoDisplays())
-        a.opt.display = 0;
-    if (SDL_GetDesktopDisplayMode(a.opt.display, &mode) < 0)
-        mode.w = 1280, mode.h = 720;
-    if (!a.opt.width || !a.opt.height) {
-        a.opt.width = mode.w;
-        a.opt.height = mode.h;
-    }
-
-    win = SDL_CreateWindow("sdviewer",
-                           SDL_WINDOWPOS_CENTERED_DISPLAY(a.opt.display),
-                           SDL_WINDOWPOS_CENTERED_DISPLAY(a.opt.display),
-                           a.opt.windowed ? a.opt.width / 2 : mode.w,
-                           a.opt.windowed ? a.opt.height / 2 : mode.h,
-                           SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI |
-                               (a.opt.windowed ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP));
-    if (!win) {
+    a->win = SDL_CreateWindow("SpaceDesk Linux", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1100, 700,
+                              SDL_WINDOW_RESIZABLE);
+    if (!a->win) {
         fprintf(stderr, "SDL_CreateWindow: %s\n", SDL_GetError());
         return 1;
     }
-    ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-    if (!ren)
-        ren = SDL_CreateRenderer(win, -1, 0);
-    if (!ren) {
-        fprintf(stderr, "SDL_CreateRenderer: %s\n", SDL_GetError());
+    a->ren = SDL_CreateRenderer(a->win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    if (!a->ren)
+        a->ren = SDL_CreateRenderer(a->win, -1, 0);
+    if (!a->ren || ui_init(a) < 0) {
+        fprintf(stderr, "renderer: %s\n", SDL_GetError());
         return 1;
     }
-    if (a.opt.verbose) {
+    a->ev_frame = SDL_RegisterEvents(2);
+    a->ev_state = a->ev_frame + 1;
+    if (verbose) {
         SDL_RendererInfo ri;
-        SDL_GetRendererInfo(ren, &ri);
-        fprintf(stderr, "render: SDL video driver %s, renderer %s\n", SDL_GetCurrentVideoDriver(), ri.name);
+        SDL_GetRendererInfo(a->ren, &ri);
+        fprintf(stderr, "video driver %s, renderer %s, device id %s\n", SDL_GetCurrentVideoDriver(), ri.name,
+                a->device_id);
     }
-    SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
-    SDL_RenderClear(ren);
-    SDL_RenderPresent(ren);
 
-    a.frame_event = SDL_RegisterEvents(1);
-    a.slot.lock = SDL_CreateMutex();
-    a.dec = sdv_decoder_new(a.opt.allow_hw);
-    if (a.frame_event == (Uint32)-1 || !a.slot.lock || !a.dec)
-        return 1;
+    if (cli_host)
+        app_connect(a, cli_host);
+    else if (a->set.autoconnect == SDV_AUTOCONNECT_ADDRESS && a->set.server[0])
+        app_connect(a, a->set.server);
+    else
+        discovery_start(a);
+    update_screensaver(a);
 
-    fprintf(stderr, "net: connecting to %s:%d\n", a.opt.host, a.opt.port);
-    if (sdv_conn_open(&a.conn, a.opt.host, a.opt.port) < 0)
-        return 1;
+    /* debugging aid: SDV_SNAPSHOT=/path/file.bmp saves one rendered frame after a few seconds */
+    const char *snapshot = getenv("SDV_SNAPSHOT");
+    Uint32 snapshot_at = SDL_GetTicks() + (getenv("SDV_SNAPSHOT_MS") ? (Uint32)atoi(getenv("SDV_SNAPSHOT_MS")) : 6000);
 
-    load_device_id(device_id, sizeof(device_id));
-    if (gethostname(host, sizeof(host)) != 0)
-        snprintf(host, sizeof(host), "linux");
-    host[sizeof(host) - 1] = 0;
-    snprintf(name, sizeof(name), "%s (sdviewer %s)", host, SDV_VERSION);
-    ip = (struct sd_ident_params){
-        .client_type = SD_CLIENT_REMOTE_MONITOR,
-        .os_type = OS_TYPE_UNKNOWN,
-        .encoding = (uint16_t)a.opt.encoding,
-        .quality = (uint32_t)a.opt.quality,
-        .fps = (uint16_t)a.opt.fps,
-        .width = (uint32_t)a.opt.width,
-        .height = (uint32_t)a.opt.height,
-        .device_id = device_id,
-        .name = name,
-    };
-    sd_build_identification(ident, &ip);
-    if (sdv_conn_send(&a.conn, ident, sizeof(ident)) < 0) {
-        fprintf(stderr, "net: identification failed\n");
-        return 1;
-    }
-    fprintf(stderr, "net: identified as %s, %dx%d@%d, %s q%d\n", device_id, a.opt.width,
-            a.opt.height, a.opt.fps, a.opt.encoding == SD_ENC_H264 ? "H.264" : "JPEG", a.opt.quality);
-
-    SDL_AtomicSet(&a.running, 1);
-    thr = SDL_CreateThread(net_thread, "sdv-net", &a);
-    if (!thr)
-        return 1;
-
-    stats_t0 = SDL_GetTicks();
-    while (!done) {
+    while (!a->quit) {
         SDL_Event ev;
-        int redraw = 0;
-
-        if (!SDL_WaitEventTimeout(&ev, 500))
-            ev.type = SDL_FIRSTEVENT;
-        do {
-            int x, y;
-
-            if (ev.type == a.frame_event) {
-                redraw = 1;
-                continue;
-            }
-            switch (ev.type) {
-            case SDL_QUIT:
-                done = 1;
-                break;
-            case SDL_WINDOWEVENT:
-                if (ev.window.event == SDL_WINDOWEVENT_EXPOSED ||
-                    ev.window.event == SDL_WINDOWEVENT_SIZE_CHANGED)
-                    redraw = 1;
-                break;
-            case SDL_MOUSEMOTION:
-                if (ev.motion.which != SDL_TOUCH_MOUSEID &&
-                    to_remote(&a, (float)ev.motion.x, (float)ev.motion.y, &x, &y) == 0)
-                    send_pointer(&a, x, y);
-                break;
-            case SDL_MOUSEBUTTONDOWN:
-            case SDL_MOUSEBUTTONUP:
-                if (ev.button.which == SDL_TOUCH_MOUSEID)
-                    break;
-                if (to_remote(&a, (float)ev.button.x, (float)ev.button.y, &x, &y) == 0)
-                    send_pointer(&a, x, y);
-                if (button_flags(ev.button.button, ev.type == SDL_MOUSEBUTTONDOWN))
-                    send_buttons(&a, button_flags(ev.button.button, ev.type == SDL_MOUSEBUTTONDOWN), 0);
-                break;
-            case SDL_MOUSEWHEEL:
-                if (ev.wheel.y)
-                    send_buttons(&a, SD_MOUSE_WHEEL, ev.wheel.y * SD_WHEEL_DELTA);
-                if (ev.wheel.x)
-                    send_buttons(&a, SD_MOUSE_HWHEEL, ev.wheel.x * SD_WHEEL_DELTA);
-                break;
-            case SDL_FINGERDOWN:
-            case SDL_FINGERMOTION:
-            case SDL_FINGERUP: {
-                uint32_t flags = SD_TOUCH_ABSOLUTE;
-                uint8_t pkt[SD_HEADER_LEN];
-
-                if (to_remote(&a, ev.tfinger.x * a.remote_w, ev.tfinger.y * a.remote_h, &x, &y) < 0)
-                    break;
-                if (ev.type == SDL_FINGERDOWN)
-                    flags |= SD_TOUCH_DOWN;
-                else if (ev.type == SDL_FINGERUP)
-                    flags |= SD_TOUCH_UP;
-                sd_build_touch(pkt, x, y, (uint32_t)a.remote_w, (uint32_t)a.remote_h, flags,
-                               (uint32_t)(ev.tfinger.fingerId & 0x7), now_ms());
-                send_packet(&a, pkt, sizeof(pkt));
-                break;
-            }
-            case SDL_KEYDOWN:
-            case SDL_KEYUP:
-                if (!handle_hotkey(win, &ev.key))
-                    handle_key(&a, &ev.key);
-                break;
-            default:
-                break;
-            }
-        } while (!done && SDL_PollEvent(&ev));
-
-        if (redraw) {
-            SDL_LockMutex(a.slot.lock);
-            if (a.slot.fresh) {
-                tex = upload(&a, ren, tex, &a.slot.images[a.slot.front]);
-                a.slot.fresh = 0;
-            }
-            SDL_UnlockMutex(a.slot.lock);
-            SDL_RenderClear(ren);
-            if (tex)
-                SDL_RenderCopy(ren, tex, NULL, NULL);
-            SDL_RenderPresent(ren);
+        nk_input_begin(a->nk);
+        if (SDL_WaitEventTimeout(&ev, a->streaming ? 8 : 50)) {
+            handle_event(a, &ev);
+            while (SDL_PollEvent(&ev))
+                handle_event(a, &ev);
         }
+        nk_sdl_handle_grab();
+        nk_input_end(a->nk);
 
-        if (a.opt.verbose && SDL_GetTicks() - stats_t0 >= 1000) {
-            int frames = SDL_AtomicSet(&a.frames_rx, 0);
-            int bytes = SDL_AtomicSet(&a.bytes_rx, 0);
-            fprintf(stderr, "stats: %d fps, %.1f Mbit/s, h264=%s\n", frames,
-                    bytes * 8.0 / 1e6 / ((SDL_GetTicks() - stats_t0) / 1000.0),
-                    sdv_decoder_h264_backend(a.dec));
-            stats_t0 = SDL_GetTicks();
+        check_sessions(a);
+        if (a->sess)
+            sdv_session_take_frame(a->sess, upload_frame, a);
+        update_stats(a);
+
+        ui_frame(a);
+        SDL_SetRenderDrawColor(a->ren, 0, 0, 0, 255);
+        SDL_RenderClear(a->ren);
+        if (a->tex && a->streaming)
+            SDL_RenderCopy(a->ren, a->tex, NULL, &a->video);
+        nk_sdl_render(NK_ANTI_ALIASING_ON);
+        if (snapshot && SDL_TICKS_PASSED(SDL_GetTicks(), snapshot_at)) {
+            int w, h;
+            SDL_Surface *surf;
+            SDL_GetRendererOutputSize(a->ren, &w, &h);
+            surf = SDL_CreateRGBSurfaceWithFormat(0, w, h, 32, SDL_PIXELFORMAT_ARGB8888);
+            if (surf && SDL_RenderReadPixels(a->ren, NULL, SDL_PIXELFORMAT_ARGB8888, surf->pixels, surf->pitch) == 0)
+                SDL_SaveBMP(surf, snapshot);
+            SDL_FreeSurface(surf);
+            snapshot = NULL;
         }
+        SDL_RenderPresent(a->ren);
     }
 
-    SDL_AtomicSet(&a.running, 0);
-    sd_build_disconnect(bye);
-    sdv_conn_send(&a.conn, bye, sizeof(bye));
-    sdv_conn_shutdown(&a.conn);
-    SDL_WaitThread(thr, NULL);
-    sdv_conn_close(&a.conn);
-
-    sdv_decoder_free(a.dec);
-    sdv_image_free(&a.slot.images[0]);
-    sdv_image_free(&a.slot.images[1]);
-    SDL_DestroyMutex(a.slot.lock);
-    if (tex)
-        SDL_DestroyTexture(tex);
-    SDL_DestroyRenderer(ren);
-    SDL_DestroyWindow(win);
+    sdv_settings_save(&a->set);
+    stop_sessions(a);
+    discovery_stop(a);
+    ui_shutdown();
+    SDL_DestroyRenderer(a->ren);
+    SDL_DestroyWindow(a->win);
     SDL_Quit();
     return 0;
 }
