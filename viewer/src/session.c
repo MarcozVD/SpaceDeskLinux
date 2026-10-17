@@ -173,6 +173,11 @@ static int session_thread(void *arg)
             /* Fragmented formats: one ack per complete frame (on the last fragment). */
             if (r > 0 && fb.encoding != SD_ENC_H264)
                 sdv_session_send(s, ack, sizeof(ack));
+        } else if (type == SD_T_PING && sd_get_u32(hdr + 12) == SD_PING_REQUEST) {
+            /* a still desktop sends no frames, so no acks either: answer to stay connected */
+            uint8_t pong[SD_HEADER_LEN];
+            sd_build_ping_reply(pong);
+            sdv_session_send(s, pong, sizeof(pong));
         } else if (type == SD_T_ERROR) {
             snprintf(err, sizeof(err), "El servidor cerro la sesion (motivo %u)", sd_get_u32(hdr + 8));
             break;

@@ -67,6 +67,15 @@ void sd_build_flow_ack(uint8_t *out)
     sd_put_u32(out, SD_T_FLOW_ACK);
 }
 
+/* Echo reply to a server Ping request (@12 = 1): same header with @12 = 2. The server only
+ * refreshes its inactivity timer with it, so it is safe to send at any time. */
+void sd_build_ping_reply(uint8_t *out)
+{
+    memset(out, 0, SD_HEADER_LEN);
+    sd_put_u32(out, SD_T_PING);
+    sd_put_u32(out + 12, SD_PING_REPLY);
+}
+
 void sd_build_mouse(uint8_t *out, int32_t dx, int32_t dy, int32_t data, uint32_t button_flags)
 {
     memset(out, 0, SD_HEADER_LEN);

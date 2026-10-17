@@ -94,6 +94,12 @@ static int audio_thread(void *arg)
             break;
         if (type == SD_T_ERROR)
             break;
+        if (type == SD_T_PING && sd_get_u32(hdr + 12) == SD_PING_REQUEST) {
+            uint8_t pong[SD_HEADER_LEN];
+            sd_build_ping_reply(pong);
+            sdv_conn_send(&a->conn, pong, sizeof(pong));
+            continue;
+        }
         if (type != SD_T_AUDIO_SPEAKER || !len)
             continue;
 

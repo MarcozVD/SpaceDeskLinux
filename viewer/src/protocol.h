@@ -31,6 +31,13 @@ enum sd_type {
     SD_T_AUDIO_SPEAKER = 14,
 };
 
+/* Ping @12 option: the server sends requests every ~10 s and drops a client that neither
+ * acks frames nor answers them for ~45 s (see docs/protocol.md). */
+enum sd_ping_option {
+    SD_PING_REQUEST = 1,
+    SD_PING_REPLY = 2,
+};
+
 enum sd_client_type {
     SD_CLIENT_REMOTE_MONITOR = 0,
     SD_CLIENT_SPEAKER = 3,
@@ -125,6 +132,7 @@ void sd_build_identification(uint8_t *out, const struct sd_ident_params *p);
 void sd_build_speaker_identification(uint8_t *out, const char *device_id, const char *name);
 /* out must hold SD_HEADER_LEN bytes */
 void sd_build_flow_ack(uint8_t *out);
+void sd_build_ping_reply(uint8_t *out);
 /* dx/dy are relative motion; data is the wheel delta */
 void sd_build_mouse(uint8_t *out, int32_t dx, int32_t dy, int32_t data, uint32_t button_flags);
 void sd_build_keyboard(uint8_t *out, uint32_t vk, uint32_t scancode, uint32_t flags);
