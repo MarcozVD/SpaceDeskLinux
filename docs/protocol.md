@@ -70,7 +70,20 @@ type 8 closes the session; anything else is logged and ignored `[bin]` (`L5Threa
 7. Client ends with type 8 (28 bytes from HTML5 viewer) and closes.
 
 `[live]`: idle desktop, ack per frame: JPEG ≈11 fps (4 fragments each); H.264 at requested 60 fps
-with tiny P-frames. No Ping reply needed in 40 s sessions as long as acks flow.
+with tiny P-frames.
+
+### Ping / keepalive `[live]` `[bin]`
+
+- Server → client Ping: every ~10 s during a session, `@12 = 1` (request); e.g. `@8 = 15`, `@12 = 1`.
+  The first 1–2 Pings right after connecting have all fields zero.
+- Client → server Ping reply: `@12 = 2`. In the server receiver (`OnPacketReceived_`) a reply only
+  refreshes the client's last-activity time — the same timestamp a FlowControlAck refreshes; a
+  FlowControlAck *also* adds one flow-control credit, so unsolicited acks must not be used as a
+  heartbeat.
+- A client that answers nothing is dropped ~45 s after its last ack/reply. On the cable setup a still
+  desktop stops the H.264 frames altogether, so the client must answer Pings. On localhost, where
+  frames keep flowing, a client that acks every frame survives; a client that leaves one frame unacked
+  is dropped after ~45 s even if it answers Pings (flow-control timeout).
 
 ## Identification (C→S)
 
@@ -161,7 +174,7 @@ All are 128-byte headers with `@4 = 0` unless stated.
 
 | Type | Fields |
 |---|---|
-| 1 Ping | `@12` option; option 2 = echo reply (refreshes inactivity timer) |
+| 1 Ping | `@12` option (1 = request, 2 = reply). A reply refreshes the server's inactivity timer; a FlowControlAck additionally adds one flow-control credit `[live]` `[bin]` |
 | 6 EVT_DISPLAY_SETTINGS | `@8` stream state: 1 or 2 (ignored if unchanged) — exact meaning `[?]` (likely start/pause stream) |
 | 7 FlowControlAck | no fields; one per complete frame; also refreshes inactivity timer |
 | 8 Error/Disconnect | HTML5 sends 28 bytes with only `@0 = 8` |

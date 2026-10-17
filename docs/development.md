@@ -153,6 +153,9 @@ Debug aids:
 | 2026-10-15 | viewer 0.3.1, nested `Xephyr :7` display, XTest clicks | Reproduced the 0.3.0 bug (close the Resolution dialog, click Ajustes: nothing opens); with 0.3.1 the Ajustes menu opens and "Calidad y rendimiento…" opens its dialog |
 | 2026-10-15 | viewer 0.3.2, isolated Xephyr display 1100x700, XTest | 0.3.1 kept the full-screen menu bar after the pointer moved away; 0.3.2 shows it at the top edge and hides it once the pointer leaves |
 | 2026-10-15 | `apt install ./sdviewer_0.3.2_amd64.deb` in a clean debian:bookworm container | Dependencies pulled, `sdviewer --version` prints 0.3.2, menu entry Exec=/usr/bin/sdviewer-launch, `apt remove` clean |
+| 2026-10-16 | 0.3.2 vs 0.3.3, two viewers at once to 192.168.50.1 (cable), one Xephyr and config each, H.264 800x600, still desktop, 130 s | 0.3.2 dropped to 0 fps and reconnected; 0.3.3 kept ~30 fps with a single connection |
+| 2026-10-16 | viewer 0.3.3 alone, same setup, 110 s | One connection, ~30 fps throughout |
+| 2026-10-16 | viewer 0.3.3 click-to-control hint | Logic change only, not checked in a screenshot (it would show the real desktop) |
 
 ### Testing input without a human
 

@@ -3,6 +3,16 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.3] - 2026-10-16
+
+### Fixed
+
+- Disconnect every ~60 s on a still desktop: with nothing to send, the viewer was dropped by the
+  server's inactivity timer. It now answers every server Ping request (keepalive), in the display and
+  audio sessions.
+- The "click to control" hint no longer stays on screen forever: it is shown for 6 s after connecting
+  and after releasing the mouse with Ctrl+Alt+M.
+
 ## [0.3.2] - 2026-10-15
 
 ### Fixed
@@ -57,6 +67,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - First H.264/JPEG viewer (see the git history for the first commits).
 
+[0.3.3]: https://github.com/MarcozVD/SpaceDeskLinux/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/MarcozVD/SpaceDeskLinux/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/MarcozVD/SpaceDeskLinux/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/MarcozVD/SpaceDeskLinux/compare/v0.2.0...v0.3.0

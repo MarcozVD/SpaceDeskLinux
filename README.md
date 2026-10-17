@@ -41,18 +41,19 @@ Each release on <https://github.com/MarcozVD/SpaceDeskLinux/releases> ships a De
 recommended way to install:
 
 ```sh
-sudo apt install ./sdviewer_0.3.2_amd64.deb
+sudo apt install ./sdviewer_0.3.3_amd64.deb
 ```
 
 `apt` resolves the dependencies (the package is built on Debian 12 bookworm); launch **"SpaceDesk
 Linux"** from the menu or run `sdviewer`, and remove it with `sudo apt remove sdviewer`.
 
-A standalone binary is also attached (asset `sdviewer-0.3.2-linux-x86_64` plus its `.sha256`):
+A standalone binary is also attached (`sdviewer-0.3.3-linux-x86_64`); the release includes a
+`SHA256SUMS` file covering its downloads:
 
 ```sh
-chmod +x sdviewer-0.3.2-linux-x86_64
-sha256sum -c sdviewer-0.3.2-linux-x86_64.sha256
-./sdviewer-0.3.2-linux-x86_64
+chmod +x sdviewer-0.3.3-linux-x86_64
+sha256sum -c SHA256SUMS --ignore-missing
+./sdviewer-0.3.3-linux-x86_64
 ```
 
 Runtime packages for the standalone binary: `libsdl2-2.0-0`, `libavcodec59`, `libavutil57`,
@@ -157,6 +158,8 @@ PC also appears in the discovery list (see the discovery note in `docs/protocol.
 - **Server not listed** — check that both machines are on the same network and the Windows firewall
   allows spacedesk. A PC with both Ethernet and Wi-Fi may answer only on one address: use the IP
   shown in the list.
+- **Disconnects about once a minute while the screen is still** — fixed in 0.3.3 (the viewer now
+  answers the server's keepalive).
 - **Black screen or artifacts** — **Ajustes > Avanzado**: disable hardware H.264, or run with
   `--no-hw`.
 - **Low frame rate** — keep the native resolution of the Linux screen (a larger custom resolution
