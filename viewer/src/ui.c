@@ -1238,9 +1238,9 @@ void ui_frame(struct sdv_app *a)
     if (show_status)
         status_bar(a, w, h);
 
-    /* hint until the user captures the mouse */
+    /* hint for a few seconds after connecting or releasing the mouse, until the user captures it */
     if (a->streaming && a->sess && a->set.mouse_mode == SDV_MOUSE_REMOTE && !a->mouse_captured &&
-        a->dialog == SDV_DLG_NONE && !a->menu_open)
+        a->dialog == SDV_DLG_NONE && !a->menu_open && !SDL_TICKS_PASSED(SDL_GetTicks(), a->hint_until))
         floating(a->nk, "hint", "Haz clic en la imagen para controlar el PC.", k_release, "lo suelta", (float)w / 2,
                  area.y + 12);
 

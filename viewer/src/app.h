@@ -10,9 +10,10 @@
 #include "session.h"
 #include "settings.h"
 
-#define SDV_VERSION "0.3.2"
+#define SDV_VERSION "0.3.3"
 #define SDV_MENU_H 26
 #define SDV_STATUS_H 22
+#define SDV_HINT_MS 6000
 
 struct nk_context;
 
@@ -54,6 +55,7 @@ struct sdv_app {
     int fullscreen;
     int menu_open;      /* menu bar shown on top of the video in fullscreen */
     Uint32 menu_until;  /* fullscreen menu bar hides after this tick once the pointer left it */
+    Uint32 hint_until;  /* "click to control" hint is shown until this tick */
     int mouse_captured; /* remote mouse: relative mode active */
     int touch_down;     /* local mouse emulating a touch contact */
     enum sdv_dialog dialog;

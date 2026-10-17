@@ -193,6 +193,7 @@ void app_release_mouse(struct sdv_app *a)
         return;
     SDL_SetRelativeMouseMode(SDL_FALSE);
     a->mouse_captured = 0;
+    a->hint_until = SDL_GetTicks() + SDV_HINT_MS;
 }
 
 /* ---------- sessions ---------- */
@@ -342,8 +343,8 @@ static void check_sessions(struct sdv_app *a)
             sdv_settings_save(&a->set);
             if (a->set.fullscreen_on_connect && !a->force_windowed && !a->fullscreen)
                 app_set_fullscreen(a, 1);
-            if (a->set.mouse_mode == SDV_MOUSE_REMOTE)
-                app_toast(a, "Conectado. Haz clic en la pantalla para usar el mouse; Ctrl+Alt+M abre el menú.");
+            /* the "click to control" hint says the same as a toast would, for a few seconds */
+            a->hint_until = SDL_GetTicks() + SDV_HINT_MS;
             update_title(a);
             update_screensaver(a);
         } else if (st == SDV_STATE_FAILED || st == SDV_STATE_CLOSED) {
